@@ -9,7 +9,6 @@
 
 import { ref } from 'vue'
 import { MobileClawEngine } from 'capacitor-mobile-claw'
-import { allDeviceTools } from 'capacitor-mobile-claw-device-tools'
 import { isNative } from '@/lib/platform.js'
 
 // ── Module-level singleton ───────────────────────────────────────────────
@@ -58,7 +57,7 @@ async function _doInit() {
       engine.approveTool(msg.toolCallId, true)
     })
 
-    await engine.init({ tools: allDeviceTools })
+    await engine.init()
 
     // Sync state after init resolves
     available.value = engine.available

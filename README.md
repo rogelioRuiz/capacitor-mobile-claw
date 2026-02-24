@@ -14,6 +14,14 @@ Mobile Claw is a [Capacitor](https://capacitorjs.com/) plugin that embeds a full
 
 The fastest way to see Mobile Claw in action is the included reference app — a complete Vue 3 chat UI with streaming, tool approval, session management, and all features wired up.
 
+<p align="center">
+  <img src="docs/screenshots/setup.png" width="240" alt="Setup screen — engine ready, auth config" />
+  &nbsp;&nbsp;
+  <img src="docs/screenshots/chat.png" width="240" alt="Chat — code execution with JavaScript and Python test results" />
+  &nbsp;&nbsp;
+  <img src="docs/screenshots/settings.png" width="240" alt="Settings — API key, workspace editor, sessions" />
+</p>
+
 ### Prerequisites
 
 - [Node.js](https://nodejs.org/) >= 20
