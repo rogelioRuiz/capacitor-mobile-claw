@@ -879,9 +879,8 @@ function loadSystemPrompt() {
     systemPrompt = 'You are a helpful AI assistant running on a mobile device.';
   }
 
-  // Append vault alias awareness when the pre-execute hook is active
-  if (preExecuteHookEnabled) {
-    systemPrompt += `
+  // Append vault alias awareness (pre-execute hook is always active)
+  systemPrompt += `
 ## Vault Aliases
 
 The user may provide sensitive information that has been replaced with vault aliases in the format \`{{VAULT:<type>_<hash>}}\`.
@@ -901,7 +900,6 @@ These are SECURE REFERENCES to real values (credit cards, social security number
 - Do not persist vault aliases to files or memory — they are ephemeral session references
 - Do not attempt to decode, reverse, or manipulate the alias format
 `;
-  }
 
   return systemPrompt;
 }
