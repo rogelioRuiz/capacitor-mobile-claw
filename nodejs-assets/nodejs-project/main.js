@@ -1451,10 +1451,12 @@ async function runSetupSkill(agentId, locale = 'en', injectedConfig = null) {
     ? buildSkillTools(injectedConfig.tools, milestones)
     : _legacySetupTools();
 
-  // Merge setup tools with base file tools + MCP tools
+  // Merge setup tools with base file tools + MCP tools (setup tools win on name conflict)
   const baseTools = buildAgentTools();
   const mcpTools = await discoverMcpTools();
-  const tools = [...setupTools, ...baseTools, ...mcpTools];
+  const setupNames = new Set(setupTools.map(t => t.name));
+  const filteredBase = baseTools.filter(t => !setupNames.has(t.name));
+  const tools = [...setupTools, ...filteredBase, ...mcpTools];
 
   const sessionKey = `setup/${Date.now()}`;
   const agent = new Agent({
@@ -2066,7 +2068,11 @@ channel.addListener('message', async (event) => {
       }
 
       // Convert to UI message format
-      const uiMessages = _convertToUiMessages(rawMessages);
+      let uiMessages = _convertToUiMessages(rawMessages);
+      // For setup sessions, drop the synthetic kickoff prompt (first user message)
+      if (sessionKey.startsWith('setup/') && uiMessages.length > 0 && uiMessages[0].role === 'user') {
+        uiMessages = uiMessages.slice(1);
+      }
       channel.send('message', { type: 'session.load.result', sessionKey, messages: uiMessages });
       break;
     }
