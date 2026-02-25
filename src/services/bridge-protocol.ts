@@ -58,11 +58,26 @@ export interface FileWriteMessage {
   content: string
 }
 
+export interface SkillToolDef {
+  name: string
+  description: string
+  input_schema: Record<string, unknown>
+  /** When true, the worker emits a bridge message with the tool input instead of returning a result */
+  bridgeEvent?: string // e.g. 'setup.theme' — worker sends this message type to UI
+}
+
 export interface SkillStartMessage {
   type: 'skill.start'
   skill: string
   agentId?: string
   locale?: string // ISO 639-1: 'en', 'es', etc.
+  /** Injected skill config — if provided, overrides worker defaults */
+  config?: {
+    systemPrompt: string
+    milestones: string[]
+    tools: SkillToolDef[]
+    kickoff: string
+  }
 }
 
 export type UIToNodeMessage =

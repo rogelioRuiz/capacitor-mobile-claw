@@ -1349,7 +1349,81 @@ function buildSetupSystemPrompt(locale) {
 
 const setupMilestonesReached = new Set();
 
-async function runSetupSkill(agentId, locale = 'en') {
+/**
+ * Convert injected skill tool definitions (from client setup-skill.js) into
+ * the Agent tool format with execute handlers.
+ *
+ * Tools with a `bridgeEvent` string emit the tool input as a bridge message.
+ * Special tools (setup_milestone, setup_complete) get dedicated handlers.
+ */
+function buildSkillTools(injectedTools, milestones) {
+  return injectedTools.map((toolDef) => {
+    const props = toolDef.input_schema?.properties || {};
+    const required = toolDef.input_schema?.required || [];
+    const typeProps = {};
+    for (const [key, val] of Object.entries(props)) {
+      const desc = val.description || key;
+      const typeVal = Type.String({ description: desc });
+      typeProps[key] = required.includes(key) ? typeVal : Type.Optional(typeVal);
+    }
+
+    const base = {
+      name: toolDef.name,
+      label: toolDef.name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
+      description: toolDef.description || '',
+      parameters: Type.Object(typeProps),
+    };
+
+    if (toolDef.name === 'setup_milestone') {
+      base.execute = async (_id, params) => {
+        const m = params.milestone;
+        if (milestones.includes(m)) {
+          setupMilestonesReached.add(m);
+          channel.send('message', {
+            type: 'setup.milestone',
+            milestone: m,
+            completedCount: setupMilestonesReached.size,
+          });
+        }
+        return toToolResult({ success: true, milestone: m, completedCount: setupMilestonesReached.size });
+      };
+      return base;
+    }
+
+    if (toolDef.name === 'setup_complete') {
+      base.execute = async (_id, params) => {
+        const workspaceDir = join(OPENCLAW_ROOT, 'workspace');
+        mkdirSync(workspaceDir, { recursive: true });
+        if (params.identity) atomicWrite(join(workspaceDir, 'IDENTITY.md'), params.identity);
+        if (params.memory) atomicWrite(join(workspaceDir, 'MEMORY.md'), params.memory);
+        if (params.soul) atomicWrite(join(workspaceDir, 'SOUL.md'), params.soul);
+        channel.send('message', {
+          type: 'setup.complete',
+          shellName: params.shellName,
+          files: { 'IDENTITY.md': params.identity, 'MEMORY.md': params.memory, 'SOUL.md': params.soul },
+        });
+        return toToolResult({ success: true, shellName: params.shellName });
+      };
+      return base;
+    }
+
+    // bridgeEvent tools — emit tool input as a bridge message to the UI
+    if (toolDef.bridgeEvent) {
+      const eventType = toolDef.bridgeEvent;
+      base.execute = async (_id, params) => {
+        channel.send('message', { type: eventType, ...params });
+        return toToolResult({ success: true, applied: true });
+      };
+      return base;
+    }
+
+    // Generic fallback
+    base.execute = async (_id, params) => toToolResult(params);
+    return base;
+  });
+}
+
+async function runSetupSkill(agentId, locale = 'en', injectedConfig = null) {
   await refreshOAuthTokenIfNeeded(agentId);
   const authProfiles = loadAuthProfiles(agentId);
   const apiKey = resolveApiKey(authProfiles);
@@ -1365,73 +1439,24 @@ async function runSetupSkill(agentId, locale = 'en') {
   const modelId = 'claude-sonnet-4-5';
   const model = getModel('anthropic', modelId);
 
-  // Setup-specific tools: milestone + complete
-  const setupTools = [
-    {
-      name: 'setup_milestone',
-      label: 'Setup Milestone',
-      description: 'Report that a setup milestone has been reached during the onboarding interview.',
-      parameters: Type.Object({
-        milestone: Type.String({ description: 'The milestone name' }),
-      }),
-      execute: async (_id, params) => {
-        const m = params.milestone;
-        if (SETUP_MILESTONES.includes(m)) {
-          setupMilestonesReached.add(m);
-          channel.send('message', {
-            type: 'setup.milestone',
-            milestone: m,
-            completedCount: setupMilestonesReached.size,
-          });
-        }
-        return toToolResult({ success: true, milestone: m, completedCount: setupMilestonesReached.size });
-      },
-    },
-    {
-      name: 'setup_complete',
-      label: 'Setup Complete',
-      description: 'Complete the setup process. Call this ONLY after all milestones are reached and the user has confirmed the summary.',
-      parameters: Type.Object({
-        shellName: Type.String({ description: 'The chosen name for the Shell' }),
-        identity: Type.String({ description: 'Full IDENTITY.md content' }),
-        memory: Type.String({ description: 'Full MEMORY.md content' }),
-        soul: Type.String({ description: 'Full SOUL.md content' }),
-      }),
-      execute: async (_id, params) => {
-        // Write configuration files to workspace
-        const workspaceDir = join(OPENCLAW_ROOT, 'workspace');
-        mkdirSync(workspaceDir, { recursive: true });
+  // Use injected config from client if available, fall back to hardcoded defaults
+  const milestones = injectedConfig?.milestones || SETUP_MILESTONES;
+  const systemPrompt = injectedConfig?.systemPrompt || buildSetupSystemPrompt(locale);
+  const kickoff = injectedConfig?.kickoff || (SETUP_KICKOFF_PROMPTS[locale] || SETUP_KICKOFF_PROMPTS.en);
 
-        atomicWrite(join(workspaceDir, 'IDENTITY.md'), params.identity);
-        atomicWrite(join(workspaceDir, 'MEMORY.md'), params.memory);
-        atomicWrite(join(workspaceDir, 'SOUL.md'), params.soul);
-
-        // Emit completion to UI
-        channel.send('message', {
-          type: 'setup.complete',
-          shellName: params.shellName,
-          files: {
-            'IDENTITY.md': params.identity,
-            'MEMORY.md': params.memory,
-            'SOUL.md': params.soul,
-          },
-        });
-
-        return toToolResult({ success: true, shellName: params.shellName });
-      },
-    },
-  ];
+  const setupTools = injectedConfig?.tools
+    ? buildSkillTools(injectedConfig.tools, milestones)
+    : _legacySetupTools();
 
   // Merge setup tools with base file tools + MCP tools
   const baseTools = buildAgentTools();
   const mcpTools = await discoverMcpTools();
   const tools = [...setupTools, ...baseTools, ...mcpTools];
 
-  // Create a fresh agent with setup system prompt
   const sessionKey = `setup/${Date.now()}`;
   const agent = new Agent({
     initialState: {
-      systemPrompt: buildSetupSystemPrompt(locale),
+      systemPrompt,
       model,
       tools,
       thinkingLevel: 'off',
@@ -1446,7 +1471,6 @@ async function runSetupSkill(agentId, locale = 'en') {
   persistedMessageCount = 0;
   setupMilestonesReached.clear();
 
-  // Subscribe to events
   agent.subscribe((event) => {
     bridgeEvent(event);
     if (event.type === 'tool_execution_end' && sessionKey) {
@@ -1454,10 +1478,9 @@ async function runSetupSkill(agentId, locale = 'en') {
     }
   });
 
-  // Kick off the setup conversation — agent speaks first
   const startTime = Date.now();
   try {
-    await agent.prompt(SETUP_KICKOFF_PROMPTS[locale] || SETUP_KICKOFF_PROMPTS.en);
+    await agent.prompt(kickoff);
     await agent.waitForIdle();
 
     saveSession(agent, agentId, sessionKey, startTime);
@@ -1478,6 +1501,49 @@ async function runSetupSkill(agentId, locale = 'en') {
       retryable: isTransientError(err),
     });
   }
+}
+
+/** Legacy hardcoded setup tools (fallback when client doesn't inject config) */
+function _legacySetupTools() {
+  return [
+    {
+      name: 'setup_milestone',
+      label: 'Setup Milestone',
+      description: 'Report that a setup milestone has been reached.',
+      parameters: Type.Object({ milestone: Type.String({ description: 'The milestone name' }) }),
+      execute: async (_id, params) => {
+        const m = params.milestone;
+        if (SETUP_MILESTONES.includes(m)) {
+          setupMilestonesReached.add(m);
+          channel.send('message', { type: 'setup.milestone', milestone: m, completedCount: setupMilestonesReached.size });
+        }
+        return toToolResult({ success: true, milestone: m, completedCount: setupMilestonesReached.size });
+      },
+    },
+    {
+      name: 'setup_complete',
+      label: 'Setup Complete',
+      description: 'Complete the setup process.',
+      parameters: Type.Object({
+        shellName: Type.String({ description: 'The chosen name for the Shell' }),
+        identity: Type.String({ description: 'Full IDENTITY.md content' }),
+        memory: Type.String({ description: 'Full MEMORY.md content' }),
+        soul: Type.String({ description: 'Full SOUL.md content' }),
+      }),
+      execute: async (_id, params) => {
+        const workspaceDir = join(OPENCLAW_ROOT, 'workspace');
+        mkdirSync(workspaceDir, { recursive: true });
+        atomicWrite(join(workspaceDir, 'IDENTITY.md'), params.identity);
+        atomicWrite(join(workspaceDir, 'MEMORY.md'), params.memory);
+        atomicWrite(join(workspaceDir, 'SOUL.md'), params.soul);
+        channel.send('message', {
+          type: 'setup.complete', shellName: params.shellName,
+          files: { 'IDENTITY.md': params.identity, 'MEMORY.md': params.memory, 'SOUL.md': params.soul },
+        });
+        return toToolResult({ success: true, shellName: params.shellName });
+      },
+    },
+  ];
 }
 
 // ── Main agent run function ──────────────────────────────────────────────
@@ -1726,7 +1792,7 @@ channel.addListener('message', async (event) => {
       if (msg.skill === 'setup') {
         const agentId = msg.agentId || 'main';
         const locale = msg.locale || 'en';
-        await runSetupSkill(agentId, locale);
+        await runSetupSkill(agentId, locale, msg.config || null);
       } else {
         channel.send('message', {
           type: 'agent.error',

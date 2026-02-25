@@ -6,8 +6,9 @@ node_modules/
 
 # Build output
 dist/
-# sql.js ships its WASM binary in dist/ — un-ignore it
-!nodejs-assets/nodejs-project/node_modules/sql.js/dist/
+# sql.js ships its WASM binary in dist/ — un-ignore only production files
+!nodejs-assets/nodejs-project/node_modules/sql.js/dist/sql-wasm.js
+!nodejs-assets/nodejs-project/node_modules/sql.js/dist/sql-wasm.wasm
 
 # Test workspaces
 .test-openclaw*/
