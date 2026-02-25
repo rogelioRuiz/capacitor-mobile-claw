@@ -4,8 +4,10 @@ node_modules/
 # No package manager on Android/iOS, so deps must be in the repo.
 !nodejs-assets/nodejs-project/node_modules/
 
-# Build output (only at repo root — worker node_modules may have dist/ dirs)
-/dist/
+# Build output
+dist/
+# sql.js ships its WASM binary in dist/ — un-ignore it
+!nodejs-assets/nodejs-project/node_modules/sql.js/dist/
 
 # Test workspaces
 .test-openclaw*/
