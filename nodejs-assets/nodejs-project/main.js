@@ -998,31 +998,6 @@ function buildAgentTools() {
       }),
       execute: async (_id, params) => toToolResult(await gitDiffTool(params)),
     },
-    {
-      name: 'apply_theme',
-      label: 'Apply Theme',
-      description: 'Apply a visual theme across the entire app — background, text, buttons, cards, sidebar, everything changes. Colors use oklch(L C H) format where L=lightness(0-1), C=chroma(0-0.4), H=hue(0-360). Call whenever the user asks to change their theme, vibe, or color scheme. You can call multiple times to iterate until they love it.\n\nHow to build a cohesive theme: Pick ONE hue based on the vibe. background: L=0.13-0.17, C=0.005-0.02 (barely tinted). foreground: L=0.93-0.96, C=0.005-0.015. primary: L=0.50-0.70, C=0.18-0.28 (vivid!). secondary/muted/accent: background.L+0.08, C≤0.015 (subtle elevations NOT bright colors). mutedForeground: L=0.65-0.72. border: use alpha transparency. The full hue wheel is available — warm (H≈30), amber (H≈75), green (H≈140), teal (H≈185), blue (H≈250), violet (H≈290), lavender (H≈310), rose (H≈15), red (H≈20). Be creative — translate moods into color.',
-      parameters: Type.Object({
-        vibe: Type.String({ description: 'Short label for this vibe (e.g. "sunset warmth", "deep ocean", "neon city")' }),
-        background: Type.String({ description: 'Full-screen app backdrop. Dark (L ≤ 0.20). Example: "oklch(0.145 0.01 250)"' }),
-        foreground: Type.String({ description: 'All body text. Light (L ≥ 0.90). Example: "oklch(0.94 0.01 250)"' }),
-        primary: Type.String({ description: 'Hero accent — buttons, links, active tabs. Vivid (C ≥ 0.15). Example: "oklch(0.60 0.24 250)"' }),
-        secondary: Type.String({ description: 'Elevated surfaces — pressed states, toggle backgrounds. background.L + 0.08. Example: "oklch(0.22 0.01 250)"' }),
-        accent: Type.String({ description: 'Hover/highlight surfaces. Close to secondary. Example: "oklch(0.22 0.015 250)"' }),
-        muted: Type.String({ description: 'Quiet surfaces — input fills, inactive tabs. Example: "oklch(0.22 0.005 250)"' }),
-        mutedForeground: Type.String({ description: 'Secondary text — timestamps, placeholders. L ≈ 0.65-0.72. Example: "oklch(0.70 0.01 250)"' }),
-        border: Type.String({ description: 'Borders and dividers. Use alpha. Example: "oklch(1 0 0 / 12%)"' }),
-        ring: Type.String({ description: 'Focus ring outlines. Usually matches primary. Example: "oklch(0.60 0.24 250)"' }),
-        success: Type.Optional(Type.String({ description: 'Success states (green-ish). Example: "oklch(0.70 0.17 155)"' })),
-        warning: Type.Optional(Type.String({ description: 'Warning states (orange-ish). Example: "oklch(0.75 0.18 55)"' })),
-        info: Type.Optional(Type.String({ description: 'Info states (blue-ish). Example: "oklch(0.62 0.21 255)"' })),
-        destructive: Type.Optional(Type.String({ description: 'Error/danger states (red-ish). Example: "oklch(0.58 0.24 27)"' })),
-      }),
-      execute: async (_id, params) => {
-        channel.send('message', { type: 'setup.theme', ...params });
-        return toToolResult({ success: true, applied: true, vibe: params.vibe });
-      },
-    },
   ];
 
   // Wrap tools that require approval (skipped in permissive mode)
