@@ -15,6 +15,20 @@
  * - Auth profile management (auth-profiles.json)
  */
 
+// ── DEBUG: Global crash catchers (iOS only shows console.error) ──────────
+// Must be BEFORE any imports so we catch errors during module evaluation.
+process.on('uncaughtException', (err) => {
+  console.error(`[DEBUG] UNCAUGHT EXCEPTION: ${err.message}`);
+  console.error(err.stack || '(no stack)');
+});
+process.on('unhandledRejection', (reason) => {
+  const msg = reason?.message || String(reason);
+  // Don't log WASM-related rejections (handled by fetch-polyfill)
+  if (msg.includes('WASM disabled') || msg.includes('WebAssembly')) return;
+  console.error(`[DEBUG] UNHANDLED REJECTION: ${msg}`);
+  if (reason?.stack) console.error(reason.stack);
+});
+
 // ── fetch() polyfill — MUST be first import ─────────────────────────────
 // Replaces the broken undici-based built-in fetch (requires WebAssembly)
 // with a native https/http implementation. Being a separate module imported
@@ -56,6 +70,7 @@ if (typeof globalThis.FormData === 'undefined') {
 import { createRequire } from 'node:module';
 const _require = createRequire(import.meta.url);
 const { channel } = _require('bridge');
+console.error(`[DEBUG] Bridge channel loaded OK`);
 
 import { resolve, join } from 'node:path';
 import {
@@ -75,6 +90,7 @@ import { initMcpBridge } from './mcp-bridge-client.js';
 import { buildMcpAgentTools } from './mcp-agent-tools.js';
 
 const mcpBridge = initMcpBridge(channel);
+console.error(`[DEBUG] MCP bridge initialized`);
 
 // Cache for discovered MCP tools — avoids re-discovery on every agent run
 let cachedMcpTools = null;
@@ -1760,9 +1776,11 @@ async function runAgentLoop(agentId, sessionKey, prompt, requestedModel) {
 
 channel.addListener('message', async (event) => {
   const msg = event;
+  console.error(`[DEBUG] << RECV msg type=${msg?.type} keys=${Object.keys(msg||{}).join(',')}`);
 
   switch (msg.type) {
     case 'agent.start': {
+      console.error(`[DEBUG] agent.start: prompt=${(msg.prompt||'').slice(0,80)} model=${msg.model} agentId=${msg.agentId} sessionKey=${msg.sessionKey}`);
       // Idempotency: silently drop duplicate messages
       if (msg.idempotencyKey) {
         if (recentIdempotencyKeys.has(msg.idempotencyKey)) break;
@@ -2344,7 +2362,11 @@ channel.addListener('message', async (event) => {
 
 // ── Init ──────────────────────────────────────────────────────────────────
 
+console.error(`[DEBUG] Starting init sequence...`);
+console.error(`[DEBUG] OPENCLAW_ROOT=${OPENCLAW_ROOT}`);
+console.error(`[DEBUG] DATADIR=${process.env.DATADIR || '(unset)'}, HOME=${process.env.HOME || '(unset)'}`);
 ensureOpenClawDirs();
+console.error(`[DEBUG] Dirs ensured. Sending worker.loading_phase=engine`);
 channel.send('message', { type: 'worker.loading_phase', phase: 'engine' });
 
 // Initialize SQLite, migrate legacy JSONL data, then signal ready and warm MCP discovery
@@ -2357,30 +2379,36 @@ initWorkerDb(OPENCLAW_ROOT).then(() => {
     console.warn(`[init] JSONL migration failed (non-fatal): ${err.message}`);
   }
 }).catch(err => {
-  console.warn(`[init] SQLite init failed, using JSONL fallback: ${err.message}`);
+  console.error(`[DEBUG] SQLite init failed, using JSONL fallback: ${err.message}`);
 }).finally(() => {
-  // Send ready as soon as DB init/migration settles — do not block on MCP discovery.
-  channel.send('message', {
-    type: 'worker.ready',
-    nodeVersion: process.version,
-    openclawRoot: OPENCLAW_ROOT,
-    mcpToolCount: 0,
-  });
-  console.log(`[mobile-claw worker] Ready. Node ${process.version}, root=${OPENCLAW_ROOT}, mcpTools=0 (discovering...)`);
+  try {
+    console.error(`[DEBUG] .finally() entered — sending worker.ready`);
+    channel.send('message', {
+      type: 'worker.ready',
+      nodeVersion: process.version,
+      openclawRoot: OPENCLAW_ROOT,
+      mcpToolCount: 0,
+    });
+    console.error(`[DEBUG] worker.ready SENT. Node=${process.version} root=${OPENCLAW_ROOT}`);
 
-  // Pre-discover MCP device tools at startup (non-blocking, best-effort).
-  // Results are cached so the first agent run doesn't wait for discovery.
-  channel.send('message', { type: 'worker.loading_phase', phase: 'tools' });
-  discoverMcpTools().then(tools => {
-    if (tools.length > 0) {
-      channel.send('message', {
-        type: 'worker.tools_updated',
-        mcpToolCount: tools.length,
-      });
-      console.log(`[mobile-claw worker] MCP tools ready: ${tools.length}`);
-    }
-    channel.send('message', { type: 'worker.loading_phase', phase: 'ready' });
-  }).catch(() => {
-    channel.send('message', { type: 'worker.loading_phase', phase: 'ready' });
-  });
+    // Pre-discover MCP device tools at startup (non-blocking, best-effort).
+    channel.send('message', { type: 'worker.loading_phase', phase: 'tools' });
+    discoverMcpTools().then(tools => {
+      console.error(`[DEBUG] MCP discovery resolved: ${tools.length} tools`);
+      if (tools.length > 0) {
+        channel.send('message', {
+          type: 'worker.tools_updated',
+          mcpToolCount: tools.length,
+        });
+      }
+      channel.send('message', { type: 'worker.loading_phase', phase: 'ready' });
+      console.error(`[DEBUG] All loading phases complete — worker fully ready`);
+    }).catch((mcpErr) => {
+      console.error(`[DEBUG] MCP discovery FAILED: ${mcpErr?.message || mcpErr}`);
+      channel.send('message', { type: 'worker.loading_phase', phase: 'ready' });
+    });
+  } catch (finallyErr) {
+    console.error(`[DEBUG] FATAL in .finally(): ${finallyErr?.message || finallyErr}`);
+    console.error(finallyErr?.stack || '(no stack)');
+  }
 });
