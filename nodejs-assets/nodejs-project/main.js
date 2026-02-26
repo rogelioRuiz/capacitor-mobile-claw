@@ -1120,6 +1120,15 @@ function buildAgentTools() {
 
 // skillContext: if set, events are tagged as skill events and ignored by the main session view
 function bridgeEvent(event, skillContext = null) {
+  if (event.type === 'tool_execution_start' || event.type === 'tool_execution_end') {
+    console.error(`[DEBUG event] ${event.type} tool=${event.toolName} id=${event.toolCallId}`);
+  } else if (event.type === 'message_update') {
+    // Only log first delta to avoid spam
+    const e = event.assistantMessageEvent;
+    if (e.type === 'text_delta' && (e.delta||'').length > 0) {
+      console.error(`[DEBUG event] text_delta len=${e.delta.length} first20=${JSON.stringify(e.delta.slice(0,20))}`);
+    }
+  }
   switch (event.type) {
     case 'message_update': {
       const e = event.assistantMessageEvent;
@@ -1550,20 +1559,27 @@ function buildSkillTools(injectedTools, milestones) {
 }
 
 async function runSkill(agentId, locale = 'en', injectedConfig = null) {
-  await refreshOAuthTokenIfNeeded(agentId);
+  console.error(`[DEBUG runSkill] START agentId=${agentId} locale=${locale} hasConfig=${!!injectedConfig} configId=${injectedConfig?.id}`);
+  try { await refreshOAuthTokenIfNeeded(agentId); } catch(e) { console.error(`[DEBUG runSkill] OAuth refresh err: ${e.message}`); }
   const authProfiles = loadAuthProfiles(agentId);
+  const profileKeys = Object.keys(authProfiles.profiles || {});
+  console.error(`[DEBUG runSkill] Auth: ${profileKeys.length} profiles [${profileKeys.join(',')}] lastGood=${JSON.stringify(authProfiles.lastGood)}`);
   const apiKey = resolveApiKey(authProfiles);
 
   if (!apiKey) {
+    console.error(`[DEBUG runSkill] NO API KEY — aborting`);
     channel.send('message', {
       type: 'agent.error',
       error: 'No AI provider configured. Connect a provider first.',
     });
     return;
   }
+  console.error(`[DEBUG runSkill] API key: type=${apiKey.startsWith('sk-ant-oat') ? 'oauth' : 'api_key'} len=${apiKey.length} prefix=${apiKey.slice(0,15)}...`);
 
   const modelId = 'claude-sonnet-4-5';
+  console.error(`[DEBUG runSkill] Getting model anthropic/${modelId}`);
   const model = getModel('anthropic', modelId);
+  console.error(`[DEBUG runSkill] Model: ${JSON.stringify({id: model?.id, provider: model?.provider, api: model?.api}).slice(0,200)}`);
 
   // Use injected config from client if available, fall back to hardcoded defaults
   const milestones = injectedConfig?.milestones || SETUP_MILESTONES;
@@ -1609,12 +1625,27 @@ async function runSkill(agentId, locale = 'en', injectedConfig = null) {
   });
 
   // Notify client that the skill session has started (used to init isolated conversation view)
+  console.error(`[DEBUG runSkill] Sending skill.session_started skillId=${skillId} sessionKey=${sessionKey}`);
   channel.send('message', { type: 'skill.session_started', sessionKey, skillId });
 
   const startTime = Date.now();
+  console.error(`[DEBUG runSkill] Calling agent.prompt() with kickoff (${kickoff.length} chars): ${kickoff.slice(0,80)}`);
   try {
     await agent.prompt(kickoff);
+    console.error(`[DEBUG runSkill] agent.prompt() resolved, waitForIdle()...`);
     await agent.waitForIdle();
+    console.error(`[DEBUG runSkill] Idle. Duration=${Date.now() - startTime}ms msgs=${agent.state.messages.length}`);
+    // Check if the agent silently errored (prompt() resolves even on stream errors)
+    if (agent.state.error) {
+      console.error(`[DEBUG runSkill] AGENT STATE ERROR: ${agent.state.error}`);
+    }
+    const lastMsg = agent.state.messages[agent.state.messages.length - 1];
+    if (lastMsg) {
+      console.error(`[DEBUG runSkill] Last msg: role=${lastMsg.role} stopReason=${lastMsg.stopReason} errorMessage=${lastMsg.errorMessage || 'none'}`);
+      if (lastMsg.errorMessage) {
+        console.error(`[DEBUG runSkill] ERROR DETAIL: ${lastMsg.errorMessage}`);
+      }
+    }
 
     saveSession(agent, agentId, sessionKey, startTime);
 
@@ -1628,7 +1659,11 @@ async function runSkill(agentId, locale = 'en', injectedConfig = null) {
       durationMs: Date.now() - startTime,
     });
     channel.send('message', { type: 'skill.ended', skillId, sessionKey });
+    console.error(`[DEBUG runSkill] skill.ended sent (success)`);
   } catch (err) {
+    console.error(`[DEBUG runSkill] CAUGHT ERROR: ${err.message}`);
+    console.error(`[DEBUG runSkill] Error details: name=${err.name} status=${err.status} code=${err.code}`);
+    console.error(err.stack || '(no stack)');
     channel.send('message', {
       type: 'agent.error',
       skill: sessionKey,
@@ -1686,26 +1721,42 @@ function _legacySetupTools() {
 // ── Main agent run function ──────────────────────────────────────────────
 
 async function runAgentLoop(agentId, sessionKey, prompt, requestedModel) {
-  await refreshOAuthTokenIfNeeded(agentId);
+  console.error(`[DEBUG] runAgentLoop START: agentId=${agentId} sessionKey=${sessionKey} model=${requestedModel}`);
+  try {
+    await refreshOAuthTokenIfNeeded(agentId);
+  } catch (oauthErr) {
+    console.error(`[DEBUG] OAuth refresh failed: ${oauthErr.message}`);
+  }
   const authProfiles = loadAuthProfiles(agentId);
+  const profileKeys = Object.keys(authProfiles.profiles || {});
+  const profileTypes = profileKeys.map(k => `${k}:${authProfiles.profiles[k]?.type}`);
+  console.error(`[DEBUG] Auth profiles: ${profileKeys.length} profiles [${profileTypes.join(', ')}] lastGood=${JSON.stringify(authProfiles.lastGood)}`);
   const apiKey = resolveApiKey(authProfiles);
 
   if (!apiKey) {
+    console.error(`[DEBUG] NO API KEY — sending agent.error`);
     channel.send('message', {
       type: 'agent.error',
       error: 'No Anthropic API key configured. Go to Settings to add one.',
     });
     return;
   }
+  console.error(`[DEBUG] API key resolved: type=${apiKey.startsWith('sk-ant-oat') ? 'oauth' : apiKey.startsWith('sk-ant-') ? 'api_key' : 'unknown'} len=${apiKey.length} prefix=${apiKey.slice(0,12)}...`);
 
   const systemPrompt = loadSystemPrompt();
+  console.error(`[DEBUG] System prompt loaded: ${systemPrompt.length} chars`);
   const modelId = requestedModel || 'claude-sonnet-4-5';
+  console.error(`[DEBUG] Getting model: provider=anthropic modelId=${modelId}`);
   const model = getModel('anthropic', modelId);
+  console.error(`[DEBUG] Model resolved: ${JSON.stringify({id: model?.id, provider: model?.provider, api: model?.api}).slice(0,200)}`);
 
   // Merge local tools with MCP device tools (if bridge is available)
   const localTools = buildAgentTools();
+  console.error(`[DEBUG] Local tools: ${localTools.length}`);
   const mcpTools = await discoverMcpTools();
+  console.error(`[DEBUG] MCP tools: ${mcpTools.length}`);
   const tools = [...localTools, ...mcpTools];
+  console.error(`[DEBUG] Total tools: ${tools.length}`);
 
   // Create Agent instance
   const agent = new Agent({
@@ -1734,9 +1785,12 @@ async function runAgentLoop(agentId, sessionKey, prompt, requestedModel) {
 
   // Run
   const startTime = Date.now();
+  console.error(`[DEBUG] Calling agent.prompt()...`);
   try {
     await agent.prompt(prompt);
+    console.error(`[DEBUG] agent.prompt() resolved, calling waitForIdle()...`);
     await agent.waitForIdle();
+    console.error(`[DEBUG] agent idle. Duration=${Date.now() - startTime}ms messages=${agent.state.messages.length}`);
 
     // Save session + send completion
     currentSessionKey = sessionKey;
@@ -1750,9 +1804,13 @@ async function runAgentLoop(agentId, sessionKey, prompt, requestedModel) {
       cumulativeUsage: usage,
       durationMs: Date.now() - startTime,
     });
+    console.error(`[DEBUG] agent.completed sent. tokens=${JSON.stringify(usage)}`);
     // Keep currentAgent alive for multi-turn follow-ups
     currentAbortController = null;
   } catch (err) {
+    console.error(`[DEBUG] agent.prompt THREW: ${err.message}`);
+    console.error(`[DEBUG] Error details: status=${err.status} code=${err.code} name=${err.name}`);
+    console.error(err.stack || '(no stack)');
     const retryable = isTransientError(err);
     channel.send('message', {
       type: 'agent.error',
@@ -1938,9 +1996,11 @@ channel.addListener('message', async (event) => {
     }
 
     case 'skill.start': {
+      console.error(`[DEBUG] skill.start: skill=${msg.skill} agentId=${msg.agentId} locale=${msg.locale}`);
       const agentId = msg.agentId || 'main';
       const locale = msg.locale || 'en';
       await runSkill(agentId, locale, msg.config || null);
+      console.error(`[DEBUG] skill.start completed`);
       break;
     }
 
@@ -2356,7 +2416,7 @@ channel.addListener('message', async (event) => {
     }
 
     default:
-      console.log('[Worker] Unknown message type:', msg.type);
+      console.error(`[DEBUG] Unknown message type: ${msg.type}`);
   }
 });
 

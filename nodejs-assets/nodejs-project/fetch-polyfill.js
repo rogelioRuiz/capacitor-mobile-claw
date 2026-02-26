@@ -74,8 +74,13 @@ class _Headers {
   }
   get(k) { return this.#map.get(k.toLowerCase()) ?? null; }
   set(k, v) { this.#map.set(k.toLowerCase(), String(v)); }
+  append(k, v) {
+    const lk = k.toLowerCase();
+    const existing = this.#map.get(lk);
+    this.#map.set(lk, existing != null ? `${existing}, ${String(v)}` : String(v));
+  }
   has(k) { return this.#map.has(k.toLowerCase()); }
-  delete(k) { this.#map.delete(k.toLowerCase()); }
+  delete(k) { return this.#map.delete(k.toLowerCase()); }
   forEach(cb) { this.#map.forEach((v, k) => cb(v, k, this)); }
   *entries() { yield* this.#map.entries(); }
   *keys() { yield* this.#map.keys(); }
@@ -84,13 +89,14 @@ class _Headers {
 }
 
 class _Response {
-  #body; #bodyUsed = false; #status; #statusText; #headers; #url;
+  #body; #bodyUsed = false; #status; #statusText; #headers; #url; #webStream;
   constructor(body, { status = 200, statusText = '', headers = {}, url = '' } = {}) {
     this.#body = body;
     this.#status = status;
     this.#statusText = statusText;
     this.#headers = new _Headers(headers);
     this.#url = url;
+    this.#webStream = undefined; // lazy-init, cached
   }
   get ok() { return this.#status >= 200 && this.#status < 300; }
   get status() { return this.#status; }
@@ -99,20 +105,24 @@ class _Response {
   get url() { return this.#url; }
   get bodyUsed() { return this.#bodyUsed; }
   get body() {
+    if (this.#webStream !== undefined) return this.#webStream;
     if (this.#body instanceof Readable) {
       if (typeof Readable.toWeb === 'function') {
-        return Readable.toWeb(this.#body);
+        this.#webStream = Readable.toWeb(this.#body);
+      } else {
+        const nodeStream = this.#body;
+        this.#webStream = new ReadableStream({
+          start(controller) {
+            nodeStream.on('data', (chunk) => controller.enqueue(typeof chunk === 'string' ? new TextEncoder().encode(chunk) : chunk));
+            nodeStream.on('end', () => controller.close());
+            nodeStream.on('error', (err) => controller.error(err));
+          },
+          cancel() { nodeStream.destroy(); },
+        });
       }
-      const nodeStream = this.#body;
-      return new ReadableStream({
-        start(controller) {
-          nodeStream.on('data', (chunk) => controller.enqueue(typeof chunk === 'string' ? new TextEncoder().encode(chunk) : chunk));
-          nodeStream.on('end', () => controller.close());
-          nodeStream.on('error', (err) => controller.error(err));
-        },
-        cancel() { nodeStream.destroy(); },
-      });
+      return this.#webStream;
     }
+    this.#webStream = null;
     return null;
   }
   async text() {
@@ -150,9 +160,10 @@ class _Response {
 function _nativeFetch(input, init = {}) {
   return new Promise((resolve, reject) => {
     const urlStr = typeof input === 'string' ? input : (input?.url ?? String(input));
+    const method = (init.method || 'GET').toUpperCase();
+    console.error(`[DEBUG fetch] ${method} ${urlStr.slice(0,150)} body=${init.body ? init.body.length || '?' : 'none'}`);
     const parsed = new URL(urlStr);
     const transport = parsed.protocol === 'https:' ? _https : _http;
-    const method = (init.method || 'GET').toUpperCase();
     const headers = {};
 
     if (init.headers) {
@@ -213,6 +224,7 @@ function _nativeFetch(input, init = {}) {
         headers: responseHeaders,
         url: urlStr,
       });
+      console.error(`[DEBUG fetch] ${method} ${urlStr.slice(0,80)} → ${res.statusCode} ${res.statusMessage || ''}`);
       resolve(response);
     });
 
@@ -230,8 +242,11 @@ function _nativeFetch(input, init = {}) {
       req.on('close', () => init.signal.removeEventListener('abort', onAbort));
     }
 
-    req.on('error', reject);
-    req.on('timeout', () => { req.destroy(); reject(new Error('Request timed out')); });
+    req.on('error', (err) => {
+      console.error(`[DEBUG fetch] ERROR ${method} ${urlStr.slice(0,80)}: ${err.message}`);
+      reject(err);
+    });
+    req.on('timeout', () => { req.destroy(); console.error(`[DEBUG fetch] TIMEOUT ${method} ${urlStr.slice(0,80)}`); reject(new Error('Request timed out')); });
 
     if (bodyData) req.write(bodyData);
     req.end();
