@@ -1,6 +1,6 @@
 {
   "name": "capacitor-mobile-claw",
-  "version": "1.0.9",
+  "version": "1.0.11",
   "description": "On-device AI agent engine for Capacitor apps — embedded Node.js worker with LLM, file tools, code execution, git, and extensible MCP server",
   "main": "dist/esm/index.js",
   "types": "dist/esm/index.d.ts",
