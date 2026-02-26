@@ -768,6 +768,37 @@ async function gitDiffTool(args) {
 const pendingPreExecuteHooks = new Map();
 const PRE_EXECUTE_TTL_MS = 120_000; // Auto-cancel after 2 minutes
 
+// Map of requestId → resolver callback for skill bridge tools that wait for client result
+const pendingSkillToolResults = new Map();
+const SKILL_TOOL_TTL_MS = 300_000; // 5 minutes — user may need time to complete OAuth
+
+function waitForSkillToolResult(requestId, eventType, signal) {
+  return new Promise((resolve) => {
+    const ttlTimer = setTimeout(() => {
+      if (pendingSkillToolResults.has(requestId)) {
+        pendingSkillToolResults.delete(requestId);
+        resolve(null);
+      }
+    }, SKILL_TOOL_TTL_MS);
+
+    pendingSkillToolResults.set(requestId, (result) => {
+      clearTimeout(ttlTimer);
+      resolve(result);
+    });
+
+    if (signal) {
+      const onAbort = () => {
+        clearTimeout(ttlTimer);
+        if (pendingSkillToolResults.has(requestId)) {
+          pendingSkillToolResults.delete(requestId);
+          resolve(null);
+        }
+      };
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
+  });
+}
+
 function waitForPreExecuteResult(toolCallId, toolName, signal) {
   return new Promise((resolve) => {
     const ttlTimer = setTimeout(() => {
@@ -1456,12 +1487,25 @@ function buildSkillTools(injectedTools, milestones) {
       return base;
     }
 
-    // bridgeEvent tools — emit tool input as a bridge message to the UI
+    // bridgeEvent tools — emit tool input as a bridge message to the UI.
+    // If waitForResult is true, the tool suspends until the client sends
+    // a skill.tool_result message (same pattern as pendingPreExecuteHooks).
     if (toolDef.bridgeEvent) {
       const eventType = toolDef.bridgeEvent;
-      base.execute = async (_id, params) => {
-        channel.send('message', { type: eventType, ...params });
-        return toToolResult({ success: true, applied: true });
+      const waitForResult = !!toolDef.waitForResult;
+      base.execute = async (_id, params, signal) => {
+        if (!waitForResult) {
+          channel.send('message', { type: eventType, ...params });
+          return toToolResult({ success: true, applied: true });
+        }
+        // Send bridge event then suspend until client responds
+        const requestId = `${eventType}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        channel.send('message', { type: eventType, requestId, ...params });
+        const result = await waitForSkillToolResult(requestId, eventType, signal);
+        if (!result) {
+          return toToolResult({ success: false, error: 'Request timed out or was cancelled.' });
+        }
+        return toToolResult(result);
       };
       return base;
     }
@@ -1829,6 +1873,16 @@ channel.addListener('message', async (event) => {
       if (resolver) {
         pendingPreExecuteHooks.delete(msg.toolCallId);
         resolver({ args: msg.args, deny: msg.deny, denyReason: msg.denyReason });
+      }
+      break;
+    }
+
+    case 'skill.tool_result': {
+      // Client resolved a waiting bridgeEvent tool (e.g. accounts_start_oauth after user taps "Connect")
+      const resolver = pendingSkillToolResults.get(msg.requestId);
+      if (resolver) {
+        pendingSkillToolResults.delete(msg.requestId);
+        resolver(msg.result);
       }
       break;
     }
