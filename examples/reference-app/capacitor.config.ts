@@ -4,6 +4,9 @@ const config: CapacitorConfig = {
   appId: 'io.mobileclaw.reference',
   appName: 'Mobile Claw',
   webDir: 'dist',
+  server: {
+    iosScheme: 'capacitor',
+  },
   plugins: {
     SplashScreen: {
       launchAutoHide: true,
