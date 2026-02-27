@@ -35,22 +35,23 @@ git clone https://github.com/rogelioRuiz/capacitor-mobile-claw.git
 cd capacitor-mobile-claw
 
 # Install deps and build the plugin
-npm install
-npm run build
+npm install && npm run build
 
-# Set up the reference app (postinstall auto-copies Node.js worker)
+# Set up the reference app
 cd examples/reference-app
 npm install
 
-# Build web app + sync native project
-npm run cap:build
+# Add Android platform + apply patches (first time only, idempotent)
+npm run setup:android
 
-# First time only — add platform
-npx cap add android
+# Build APK from CLI — no IDE needed
+npm run build:android
 
-# Open in Android Studio — build & run
-npx cap open android
+# Install on connected device
+adb install -r android/app/build/outputs/apk/debug/app-debug.apk
 ```
+
+> **Requires**: JDK 21+, Android SDK. Set `ANDROID_HOME` and `JAVA_HOME` if not auto-detected.
 
 ### Run on iOS
 
@@ -58,18 +59,34 @@ npx cap open android
 git clone https://github.com/rogelioRuiz/capacitor-mobile-claw.git
 cd capacitor-mobile-claw
 
-npm install
-npm run build
+npm install && npm run build
 
 cd examples/reference-app
 npm install
-npm run cap:build
 
-# First time only — add platform
-npx cap add ios
+# Add iOS platform + sync (first time only, idempotent)
+npm run setup:ios
 
-# Open in Xcode — build & run
+# Build for Simulator from CLI — no Xcode interaction needed
+npm run build:ios
+
+# Or open in Xcode for device builds
 npx cap open ios
+```
+
+> **Requires**: Xcode 15+ with iOS SDK. The SQLite SPM patch is applied automatically on `npm install`.
+
+### Running Tests
+
+```bash
+# Android E2E (100 tests, requires ADB device)
+npm run test:android
+
+# iOS E2E (104 tests, requires booted Simulator)
+npm run test:ios
+
+# Full suite: node + Android + iOS (skips unavailable platforms)
+npm run test:full
 ```
 
 Once the app launches, enter your Anthropic API key in settings and start chatting. The agent can read/write files, run code, use git, and call any registered MCP device tools — all on-device.

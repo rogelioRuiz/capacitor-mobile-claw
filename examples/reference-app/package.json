@@ -12,6 +12,10 @@
     "preview": "vite preview",
     "cap:sync": "cap sync && cp -R node_modules/@choreruiz/capacitor-node-js/ios/assets/builtin_modules ios/App/App/public/builtin_modules 2>/dev/null; true",
     "cap:build": "npm run setup:worker && vite build && npm run cap:sync",
+    "setup:android": "node scripts/setup-android.mjs",
+    "setup:ios": "node scripts/setup-ios.mjs",
+    "build:android": "npm run cap:build && cd android && ./gradlew assembleDebug",
+    "build:ios": "npm run cap:build && cd ios/App && xcodebuild -project App.xcodeproj -scheme App -sdk iphonesimulator -configuration Debug build CODE_SIGN_IDENTITY='' CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO ARCHS=arm64 ONLY_ACTIVE_ARCH=YES -quiet",
     "test:full": "node scripts/test-full.mjs",
     "test:android": "node test-sentinel-e2e.mjs",
     "test:ios": "node test-sentinel-e2e-ios.mjs"
