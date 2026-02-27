@@ -192,13 +192,6 @@
         Advanced Settings
       </button>
 
-      <!-- Cron Test link -->
-      <button
-        @click="$router.push('/cron-test')"
-        class="mt-3 text-xs text-muted-foreground/60 hover:text-muted-foreground transition-colors duration-150"
-      >
-        MobileCron Test
-      </button>
     </div>
   </div>
 </template>

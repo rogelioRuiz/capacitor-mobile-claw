@@ -109,7 +109,7 @@ Then add these scripts to your `package.json`:
 ```json
 {
   "scripts": {
-    "setup:worker": "rm -rf public/nodejs-project && cp -R node_modules/capacitor-mobile-claw/nodejs-assets/nodejs-project public/nodejs-project && cd public/nodejs-project && npm install --production",
+    "setup:worker": "rm -rf public/nodejs-project && mkdir -p public && cp -R node_modules/capacitor-mobile-claw/nodejs-assets/nodejs-project public/nodejs-project && cd public/nodejs-project && npm install --production",
     "postinstall": "npm run setup:worker",
     "cap:sync": "cap sync && cp -R node_modules/@choreruiz/capacitor-node-js/ios/assets/builtin_modules ios/App/App/public/builtin_modules 2>/dev/null; true",
     "cap:build": "npm run setup:worker && vite build && npm run cap:sync"

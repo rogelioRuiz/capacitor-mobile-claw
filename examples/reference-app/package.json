@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "setup:worker": "rm -rf public/nodejs-project && cp -R ../../nodejs-assets/nodejs-project public/nodejs-project && cd public/nodejs-project && npm install --production",
+    "setup:worker": "rm -rf public/nodejs-project && mkdir -p public && cp -R ../../nodejs-assets/nodejs-project public/nodejs-project && cd public/nodejs-project && npm install --production",
     "postinstall": "npm run setup:worker",
     "dev": "vite",
     "build": "vite build",
@@ -23,7 +23,6 @@
     "@choreruiz/capacitor-node-js": "^1.0.0",
     "capacitor-mobile-claw": "file:../../",
     "capacitor-lancedb": "^0.1.0",
-    "capacitor-mobilecron": "file:../../../capacitor-mobilecron",
     "marked": "^15.0.0"
   },
   "devDependencies": {

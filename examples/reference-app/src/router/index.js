@@ -16,11 +16,6 @@ const routes = [
     name: 'settings',
     component: () => import('@/views/SettingsView.vue'),
   },
-  {
-    path: '/cron-test',
-    name: 'cron-test',
-    component: () => import('@/views/CronTestView.vue'),
-  },
 ]
 
 const router = createRouter({
