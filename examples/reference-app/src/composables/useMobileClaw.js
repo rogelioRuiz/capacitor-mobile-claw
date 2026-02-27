@@ -175,6 +175,10 @@ async function invokeTool(toolName, args = {}) {
   return engine.invokeTool(toolName, args)
 }
 
+async function exchangeOAuthCode(tokenUrl, body, contentType) {
+  return engine.exchangeOAuthCode(tokenUrl, body, contentType)
+}
+
 // ── Public composable ────────────────────────────────────────────────────
 
 export function useMobileClaw() {
@@ -213,6 +217,9 @@ export function useMobileClaw() {
     resumeSession,
     setSessionKey,
     getSessionKey,
+
+    // OAuth
+    exchangeOAuthCode,
 
     // Low-level bridge
     onMessage,

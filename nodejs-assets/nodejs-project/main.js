@@ -327,7 +327,7 @@ async function refreshOAuthTokenIfNeeded(agentId = 'main') {
     if (remaining > 3600000) continue; // >1h remaining, no refresh needed
     console.log(`[auth] OAuth token expires in ${(remaining/3600000).toFixed(1)}h — refreshing...`);
     try {
-      const resp = await fetch('https://platform.claude.com/v1/oauth/token', {
+      const resp = await fetch('https://console.anthropic.com/v1/oauth/token', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

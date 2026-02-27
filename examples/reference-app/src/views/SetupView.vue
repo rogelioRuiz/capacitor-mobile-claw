@@ -107,30 +107,56 @@
             <!-- OAuth tab -->
             <template v-if="authTab === 'oauth'">
               <p class="text-xs text-muted-foreground/70 leading-relaxed">
-                Sign in with your Claude Max subscription. Uses OAuth PKCE — no API key needed.
+                Sign in with your Claude Max subscription. Opens a browser — Anthropic will show you a code to paste here.
               </p>
 
+              <!-- Step 1: Open browser -->
               <button
-                v-if="!hasApiKey"
+                v-if="!waitingForCode"
                 @click="startOAuthPkce"
                 :disabled="!workerReady || oauthLoading"
                 class="w-full py-2.5 rounded-lg text-sm font-medium transition-all duration-150
                        disabled:opacity-40 disabled:cursor-not-allowed
                        bg-[#da7756] text-white hover:bg-[#c46a4c] active:scale-[0.98]"
               >
-                {{ oauthLoading ? 'Signing in...' : 'Sign in with Claude' }}
+                {{ oauthLoading ? 'Opening browser...' : (hasApiKey ? 'Re-authenticate' : 'Sign in with Claude') }}
               </button>
 
-              <button
-                v-else
-                @click="startOAuthPkce"
-                :disabled="!workerReady || oauthLoading"
-                class="w-full py-2.5 rounded-lg text-sm font-medium transition-all duration-150
-                       disabled:opacity-40 disabled:cursor-not-allowed
-                       bg-secondary text-muted-foreground hover:text-foreground active:scale-[0.98]"
-              >
-                Re-authenticate
-              </button>
+              <!-- Step 2: Paste code -->
+              <template v-if="waitingForCode">
+                <p class="text-xs text-amber-400 leading-relaxed">
+                  Copy the code shown by Anthropic and paste it below.
+                </p>
+                <input
+                  v-model="oauthCodeInput"
+                  type="text"
+                  placeholder="Paste authorization code..."
+                  class="w-full px-3 py-2.5 rounded-lg bg-secondary border border-border/50
+                         text-sm text-foreground font-mono
+                         placeholder:text-muted-foreground/40
+                         focus:outline-none focus:ring-2 focus:ring-primary/50
+                         transition-colors duration-150"
+                  @keyup.enter="submitOAuthCode"
+                />
+                <div class="flex gap-2">
+                  <button
+                    @click="submitOAuthCode"
+                    :disabled="!oauthCodeInput.trim() || oauthLoading"
+                    class="flex-1 py-2.5 rounded-lg text-sm font-medium transition-all duration-150
+                           disabled:opacity-40 disabled:cursor-not-allowed
+                           bg-primary text-primary-foreground hover:bg-primary/90 active:scale-[0.98]"
+                  >
+                    {{ oauthLoading ? 'Exchanging...' : 'Submit Code' }}
+                  </button>
+                  <button
+                    @click="cancelOAuth"
+                    class="px-4 py-2.5 rounded-lg text-sm font-medium transition-all duration-150
+                           bg-secondary text-muted-foreground hover:text-foreground active:scale-[0.98]"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </template>
 
               <p v-if="oauthError" class="text-xs text-destructive">{{ oauthError }}</p>
             </template>
@@ -199,10 +225,9 @@
 <script setup>
 import { ref, watch } from 'vue'
 import { useMobileClaw } from '@/composables/useMobileClaw'
-import { isNative } from '@/lib/platform.js'
 import SettingsGroup from '@/components/settings/SettingsGroup.vue'
 
-const { workerReady, nodeVersion, updateConfig, getAuthStatus } = useMobileClaw()
+const { workerReady, nodeVersion, updateConfig, getAuthStatus, exchangeOAuthCode } = useMobileClaw()
 
 const authTab = ref('oauth')
 const apiKeyInput = ref('')
@@ -210,14 +235,19 @@ const hasApiKey = ref(false)
 const apiKeyMasked = ref('')
 const oauthLoading = ref(false)
 const oauthError = ref('')
+const waitingForCode = ref(false)
+const oauthCodeInput = ref('')
 
-// ── OAuth PKCE constants ─────────────────────────────────────────────────
+// ── OAuth PKCE constants (matches orchestrator backend client) ────────────
 
 const OAUTH_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e'
-const OAUTH_AUTHORIZE_URL = 'https://platform.claude.com/v1/oauth/authorize'
-const OAUTH_TOKEN_URL = 'https://platform.claude.com/v1/oauth/token'
-const OAUTH_REDIRECT_URI = 'io.mobileclaw.reference://oauth/callback'
-const OAUTH_SCOPES = 'user:inference user:profile'
+const OAUTH_AUTHORIZE_URL = 'https://claude.ai/oauth/authorize'
+const OAUTH_TOKEN_URL = 'https://console.anthropic.com/v1/oauth/token'
+const OAUTH_REDIRECT_URI = 'https://console.anthropic.com/oauth/code/callback'
+const OAUTH_SCOPES = 'org:create_api_key user:profile user:inference'
+
+// PKCE verifier stored for the code exchange step
+let _pendingVerifier = null
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -243,56 +273,54 @@ async function saveApiKey() {
 
 // ── PKCE helpers ─────────────────────────────────────────────────────────
 
-function generateRandomString(length) {
+function generateRandomBytes(length) {
   const arr = new Uint8Array(length)
   crypto.getRandomValues(arr)
-  return Array.from(arr, b => b.toString(16).padStart(2, '0')).join('').slice(0, length)
-}
-
-async function sha256(plain) {
-  const encoder = new TextEncoder()
-  const data = encoder.encode(plain)
-  const hash = await crypto.subtle.digest('SHA-256', data)
-  return hash
+  return arr
 }
 
 function base64urlEncode(buffer) {
-  const bytes = new Uint8Array(buffer)
+  const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer)
   let str = ''
   for (const b of bytes) str += String.fromCharCode(b)
-  return btoa(str).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '')
+  return btoa(str).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
 }
+
+async function generatePKCE() {
+  const verifier = base64urlEncode(generateRandomBytes(32))
+  const challengeBuffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier))
+  const challenge = base64urlEncode(challengeBuffer)
+  return { verifier, challenge }
+}
+
+// ── OAuth flow ────────────────────────────────────────────────────────────
 
 async function startOAuthPkce() {
   oauthLoading.value = true
   oauthError.value = ''
 
   try {
-    // Generate PKCE verifier + challenge
-    const codeVerifier = generateRandomString(64)
-    const challengeBuffer = await sha256(codeVerifier)
-    const codeChallenge = base64urlEncode(challengeBuffer)
-    const state = generateRandomString(32)
+    const { verifier, challenge } = await generatePKCE()
+    _pendingVerifier = verifier
 
-    // Store verifier for the callback
-    sessionStorage.setItem('oauth_code_verifier', codeVerifier)
-    sessionStorage.setItem('oauth_state', state)
-
-    // Build authorization URL
     const params = new URLSearchParams({
       response_type: 'code',
       client_id: OAUTH_CLIENT_ID,
       redirect_uri: OAUTH_REDIRECT_URI,
       scope: OAUTH_SCOPES,
-      state,
-      code_challenge: codeChallenge,
+      code_challenge: challenge,
       code_challenge_method: 'S256',
+      state: verifier, // Anthropic convention: state = verifier
     })
 
     const authUrl = `${OAUTH_AUTHORIZE_URL}?${params.toString()}`
 
-    // Open in system browser
-    window.open(authUrl, '_system')
+    if (typeof window !== 'undefined' && window.open) {
+      window.open(authUrl, '_system')
+    }
+
+    // Show code input — Anthropic's callback page displays the code for the user to copy
+    waitingForCode.value = true
   } catch (e) {
     oauthError.value = `OAuth error: ${e.message}`
   } finally {
@@ -300,44 +328,33 @@ async function startOAuthPkce() {
   }
 }
 
-// Handle OAuth callback (deep link)
-async function handleOAuthCallback(code, state) {
-  const savedState = sessionStorage.getItem('oauth_state')
-  const codeVerifier = sessionStorage.getItem('oauth_code_verifier')
-
-  if (state !== savedState) {
-    oauthError.value = 'OAuth state mismatch'
-    return
-  }
+async function submitOAuthCode() {
+  const rawCode = oauthCodeInput.value.trim()
+  if (!rawCode || !_pendingVerifier) return
 
   oauthLoading.value = true
   oauthError.value = ''
 
   try {
-    // Exchange code for tokens
-    const resp = await fetch(OAUTH_TOKEN_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'anthropic-version': 'oauth-2025-04-20',
-      },
-      body: JSON.stringify({
-        grant_type: 'authorization_code',
-        client_id: OAUTH_CLIENT_ID,
-        code,
-        redirect_uri: OAUTH_REDIRECT_URI,
-        code_verifier: codeVerifier,
-      }),
-    })
+    // Anthropic's callback returns "code#state" — strip #state suffix
+    const cleanCode = rawCode.split('#')[0].split('&')[0]
+    const verifier = _pendingVerifier
 
-    if (!resp.ok) {
-      const errText = await resp.text()
-      throw new Error(`Token exchange failed: ${resp.status} ${errText.slice(0, 100)}`)
+    // Delegate token exchange to Node.js worker (bypasses CORS)
+    const result = await exchangeOAuthCode(OAUTH_TOKEN_URL, {
+      grant_type: 'authorization_code',
+      client_id: OAUTH_CLIENT_ID,
+      code: cleanCode,
+      redirect_uri: OAUTH_REDIRECT_URI,
+      code_verifier: verifier,
+      state: verifier,
+    }, 'application/json')
+
+    if (!result.success) {
+      throw new Error(`Token exchange failed: ${result.status || ''} ${result.text || result.error || 'Unknown error'}`)
     }
 
-    const data = await resp.json()
-
-    // Store OAuth tokens in the worker
+    const data = result.data
     await updateConfig({
       action: 'setOAuth',
       provider: 'anthropic',
@@ -346,10 +363,9 @@ async function handleOAuthCallback(code, state) {
       expiresAt: Date.now() + (data.expires_in || 28800) * 1000,
     })
 
-    // Clean up
-    sessionStorage.removeItem('oauth_code_verifier')
-    sessionStorage.removeItem('oauth_state')
-
+    oauthCodeInput.value = ''
+    waitingForCode.value = false
+    _pendingVerifier = null
     await loadAuthStatus()
   } catch (e) {
     oauthError.value = e.message
@@ -358,30 +374,14 @@ async function handleOAuthCallback(code, state) {
   }
 }
 
-// Listen for deep link (App URL open event)
-async function setupDeepLinkListener() {
-  if (!isNative) return
-  try {
-    const { Capacitor } = await import('@capacitor/core')
-    // Only use App plugin if @capacitor/app is actually installed
-    if (!Capacitor.isPluginAvailable('App')) return
-    const AppPlugin = Capacitor.Plugins.App
-    AppPlugin.addListener('appUrlOpen', (event) => {
-      try {
-        const url = new URL(event.url)
-        if (url.pathname === '/oauth/callback' || url.host === 'oauth') {
-          const code = url.searchParams.get('code')
-          const state = url.searchParams.get('state')
-          if (code) handleOAuthCallback(code, state)
-        }
-      } catch { /* invalid URL */ }
-    })
-  } catch { /* non-fatal */ }
+function cancelOAuth() {
+  waitingForCode.value = false
+  oauthCodeInput.value = ''
+  oauthError.value = ''
+  _pendingVerifier = null
 }
 
 // ── Lifecycle ────────────────────────────────────────────────────────────
-
-setupDeepLinkListener()
 
 watch(workerReady, (ready) => {
   if (ready) loadAuthStatus()

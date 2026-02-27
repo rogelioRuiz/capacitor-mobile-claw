@@ -200,16 +200,7 @@
             </svg>
           </template>
           <template #right>
-            <button
-              @click="toggleAutoRecall"
-              class="w-10 h-6 rounded-full relative transition-colors duration-200"
-              :class="autoRecall ? 'bg-primary' : 'bg-muted-foreground/30'"
-            >
-              <span
-                class="absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200"
-                :class="autoRecall ? 'translate-x-[18px]' : 'translate-x-0.5'"
-              />
-            </button>
+            <SettingsSwitch :model-value="autoRecall" @update:model-value="toggleAutoRecall" />
           </template>
         </SettingsRow>
         <SettingsRow
@@ -224,16 +215,7 @@
             </svg>
           </template>
           <template #right>
-            <button
-              @click="toggleAutoCapture"
-              class="w-10 h-6 rounded-full relative transition-colors duration-200"
-              :class="autoCapture ? 'bg-primary' : 'bg-muted-foreground/30'"
-            >
-              <span
-                class="absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200"
-                :class="autoCapture ? 'translate-x-[18px]' : 'translate-x-0.5'"
-              />
-            </button>
+            <SettingsSwitch :model-value="autoCapture" @update:model-value="toggleAutoCapture" />
           </template>
         </SettingsRow>
         <SettingsRow
@@ -295,16 +277,7 @@
           icon-color="bg-indigo-500/15 text-indigo-300"
         >
           <template #right>
-            <button
-              class="w-10 h-6 rounded-full relative transition-colors duration-200"
-              :class="schedulerConfig?.enabled ? 'bg-primary' : 'bg-muted-foreground/30'"
-              @click="toggleSchedulerEnabled"
-            >
-              <span
-                class="absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200"
-                :class="schedulerConfig?.enabled ? 'translate-x-[18px]' : 'translate-x-0.5'"
-              />
-            </button>
+            <SettingsSwitch :model-value="schedulerConfig?.enabled ?? false" @update:model-value="toggleSchedulerEnabled" />
           </template>
         </SettingsRow>
 
@@ -328,16 +301,7 @@
           subtitle="Prefer charging windows for heavy wakeups"
         >
           <template #right>
-            <button
-              class="w-10 h-6 rounded-full relative transition-colors duration-200"
-              :class="schedulerConfig?.runOnCharging ? 'bg-primary' : 'bg-muted-foreground/30'"
-              @click="toggleRunOnCharging"
-            >
-              <span
-                class="absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200"
-                :class="schedulerConfig?.runOnCharging ? 'translate-x-[18px]' : 'translate-x-0.5'"
-              />
-            </button>
+            <SettingsSwitch :model-value="schedulerConfig?.runOnCharging ?? false" @update:model-value="toggleRunOnCharging" />
           </template>
         </SettingsRow>
 
@@ -356,16 +320,7 @@
       <SettingsGroup label="HEARTBEAT">
         <SettingsRow label="Enabled" subtitle="Run periodic sentinel checks">
           <template #right>
-            <button
-              class="w-10 h-6 rounded-full relative transition-colors duration-200"
-              :class="heartbeatConfig?.enabled ? 'bg-primary' : 'bg-muted-foreground/30'"
-              @click="toggleHeartbeatEnabled"
-            >
-              <span
-                class="absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200"
-                :class="heartbeatConfig?.enabled ? 'translate-x-[18px]' : 'translate-x-0.5'"
-              />
-            </button>
+            <SettingsSwitch :model-value="heartbeatConfig?.enabled ?? false" @update:model-value="toggleHeartbeatEnabled" />
           </template>
         </SettingsRow>
 
@@ -822,6 +777,7 @@ import { useMemory } from '@/composables/useMemory'
 import { useHeartbeat } from '@/composables/useHeartbeat'
 import SettingsGroup from '@/components/settings/SettingsGroup.vue'
 import SettingsRow from '@/components/settings/SettingsRow.vue'
+import SettingsSwitch from '@/components/settings/SettingsSwitch.vue'
 import IosOnboardingBanner from '@/components/IosOnboardingBanner.vue'
 import OverdueToast from '@/components/OverdueToast.vue'
 
