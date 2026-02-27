@@ -18,10 +18,7 @@
       </div>
 
       <!-- Title -->
-      <h1 class="text-2xl font-bold text-foreground mb-1">Mobile Claw</h1>
-      <p class="text-sm text-muted-foreground mb-8 text-center">
-        On-device AI agent powered by Anthropic
-      </p>
+      <h1 class="text-2xl font-bold text-foreground mb-8">Mobile Claw</h1>
 
       <!-- Worker Status -->
       <div class="w-full mb-6">
@@ -58,34 +55,35 @@
         </div>
       </div>
 
-      <!-- Auth Method Tabs -->
+      <!-- Provider Tabs -->
       <div class="w-full mb-4">
         <div class="flex bg-secondary/60 rounded-lg p-0.5">
           <button
-            v-for="tab in ['oauth', 'apikey']"
+            v-for="tab in ['anthropic', 'openrouter', 'openai']"
             :key="tab"
-            @click="authTab = tab"
+            @click="switchProvider(tab)"
             class="flex-1 py-2 rounded-md text-xs font-medium transition-all duration-150"
-            :class="authTab === tab
+            :class="providerTab === tab
               ? 'bg-card text-foreground shadow-sm'
               : 'text-muted-foreground hover:text-foreground'"
           >
-            {{ tab === 'oauth' ? 'Claude Max (OAuth)' : 'API Key' }}
+            {{ PROVIDER_LABELS[tab] }}
           </button>
         </div>
       </div>
 
       <!-- Auth Status -->
       <div class="w-full mb-6">
-        <SettingsGroup :label="authTab === 'oauth' ? 'CLAUDE MAX' : 'API KEY'">
+        <SettingsGroup :label="providerTab.toUpperCase()">
           <div class="px-4 py-4 space-y-3">
-            <!-- Status row -->
+
+            <!-- Status row (shared across all providers) -->
             <div class="flex items-center gap-2">
               <div
                 class="w-7 h-7 rounded-md flex items-center justify-center shrink-0"
-                :class="hasApiKey ? 'bg-emerald-500/15 text-emerald-400' : 'bg-amber-500/15 text-amber-400'"
+                :class="currentStatus.hasKey ? 'bg-emerald-500/15 text-emerald-400' : 'bg-amber-500/15 text-amber-400'"
               >
-                <svg v-if="authTab === 'oauth'" width="14" height="14" viewBox="0 0 24 24" fill="none"
+                <svg v-if="providerTab !== 'openai'" width="14" height="14" viewBox="0 0 24 24" fill="none"
                      stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
                   <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
                 </svg>
@@ -95,92 +93,156 @@
                 </svg>
               </div>
               <div class="flex-1 min-w-0">
-                <div class="text-[0.8125rem] font-medium text-foreground">
-                  {{ authTab === 'oauth' ? 'Anthropic OAuth' : 'Anthropic API Key' }}
-                </div>
-                <div class="text-xs mt-0.5" :class="hasApiKey ? 'text-emerald-400' : 'text-destructive animate-pulse'">
-                  {{ hasApiKey ? (apiKeyMasked || 'Configured') : 'Not configured' }}
+                <div class="text-[0.8125rem] font-medium text-foreground">{{ PROVIDER_LABELS[providerTab] }}</div>
+                <div class="text-xs mt-0.5" :class="currentStatus.hasKey ? 'text-emerald-400' : 'text-destructive animate-pulse'">
+                  {{ currentStatus.hasKey ? (currentStatus.masked || 'Configured') : 'Not configured' }}
                 </div>
               </div>
             </div>
 
-            <!-- OAuth tab -->
-            <template v-if="authTab === 'oauth'">
-              <p class="text-xs text-muted-foreground/70 leading-relaxed">
-                Sign in with your Claude Max subscription. Opens a browser — Anthropic will show you a code to paste here.
-              </p>
+            <!-- ── ANTHROPIC ── -->
+            <template v-if="providerTab === 'anthropic'">
 
-              <!-- Step 1: Open browser -->
-              <button
-                v-if="!waitingForCode"
-                @click="startOAuthPkce"
-                :disabled="!workerReady || oauthLoading"
-                class="w-full py-2.5 rounded-lg text-sm font-medium transition-all duration-150
-                       disabled:opacity-40 disabled:cursor-not-allowed
-                       bg-[#da7756] text-white hover:bg-[#c46a4c] active:scale-[0.98]"
-              >
-                {{ oauthLoading ? 'Opening browser...' : (hasApiKey ? 'Re-authenticate' : 'Sign in with Claude') }}
-              </button>
+              <!-- Sub-tabs: OAuth | API Key -->
+              <div class="flex bg-secondary/40 rounded-md p-0.5">
+                <button
+                  v-for="sub in ['oauth', 'apikey']"
+                  :key="sub"
+                  @click="authTab = sub"
+                  class="flex-1 py-1.5 rounded text-xs font-medium transition-all duration-150"
+                  :class="authTab === sub
+                    ? 'bg-card/80 text-foreground shadow-sm'
+                    : 'text-muted-foreground hover:text-foreground'"
+                >
+                  {{ sub === 'oauth' ? 'Claude Max (OAuth)' : 'API Key' }}
+                </button>
+              </div>
 
-              <!-- Step 2: Paste code -->
-              <template v-if="waitingForCode">
-                <p class="text-xs text-amber-400 leading-relaxed">
-                  Copy the code shown by Anthropic and paste it below.
+              <!-- OAuth sub-tab -->
+              <template v-if="authTab === 'oauth'">
+                <p class="text-xs text-muted-foreground/70 leading-relaxed">
+                  Sign in with your Claude Max subscription. Opens a browser — Anthropic will show you a code to paste here.
                 </p>
+
+                <button
+                  v-if="!waitingForCode"
+                  @click="startOAuthPkce"
+                  :disabled="oauthLoading"
+                  class="w-full py-2.5 rounded-lg text-sm font-medium transition-all duration-150
+                         disabled:opacity-40 disabled:cursor-not-allowed
+                         bg-[#da7756] text-white hover:bg-[#c46a4c] active:scale-[0.98]"
+                >
+                  {{ oauthLoading ? 'Opening browser...' : (currentStatus.hasKey ? 'Re-authenticate' : 'Sign in with Claude') }}
+                </button>
+
+                <template v-if="waitingForCode">
+                  <p class="text-xs text-amber-400 leading-relaxed">
+                    Copy the code shown by Anthropic and paste it below.
+                  </p>
+                  <input
+                    v-model="oauthCodeInput"
+                    type="text"
+                    placeholder="Paste authorization code..."
+                    class="w-full px-3 py-2.5 rounded-lg bg-secondary border border-border/50
+                           text-sm text-foreground font-mono
+                           placeholder:text-muted-foreground/40
+                           focus:outline-none focus:ring-2 focus:ring-primary/50
+                           transition-colors duration-150"
+                    @keyup.enter="submitOAuthCode"
+                  />
+                  <div class="flex gap-2">
+                    <button
+                      @click="submitOAuthCode"
+                      :disabled="!oauthCodeInput.trim() || oauthLoading"
+                      class="flex-1 py-2.5 rounded-lg text-sm font-medium transition-all duration-150
+                             disabled:opacity-40 disabled:cursor-not-allowed
+                             bg-primary text-primary-foreground hover:bg-primary/90 active:scale-[0.98]"
+                    >
+                      {{ oauthLoading ? 'Exchanging...' : 'Submit Code' }}
+                    </button>
+                    <button
+                      @click="cancelOAuth"
+                      class="px-4 py-2.5 rounded-lg text-sm font-medium transition-all duration-150
+                             bg-secondary text-muted-foreground hover:text-foreground active:scale-[0.98]"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </template>
+
+                <p v-if="oauthError" class="text-xs text-destructive">{{ oauthError }}</p>
+              </template>
+
+              <!-- API Key sub-tab -->
+              <template v-else>
                 <input
-                  v-model="oauthCodeInput"
-                  type="text"
-                  placeholder="Paste authorization code..."
+                  v-model="apiKeyInput"
+                  type="password"
+                  placeholder="sk-ant-api03-..."
                   class="w-full px-3 py-2.5 rounded-lg bg-secondary border border-border/50
                          text-sm text-foreground font-mono
                          placeholder:text-muted-foreground/40
                          focus:outline-none focus:ring-2 focus:ring-primary/50
                          transition-colors duration-150"
-                  @keyup.enter="submitOAuthCode"
                 />
-                <div class="flex gap-2">
-                  <button
-                    @click="submitOAuthCode"
-                    :disabled="!oauthCodeInput.trim() || oauthLoading"
-                    class="flex-1 py-2.5 rounded-lg text-sm font-medium transition-all duration-150
-                           disabled:opacity-40 disabled:cursor-not-allowed
-                           bg-primary text-primary-foreground hover:bg-primary/90 active:scale-[0.98]"
-                  >
-                    {{ oauthLoading ? 'Exchanging...' : 'Submit Code' }}
-                  </button>
-                  <button
-                    @click="cancelOAuth"
-                    class="px-4 py-2.5 rounded-lg text-sm font-medium transition-all duration-150
-                           bg-secondary text-muted-foreground hover:text-foreground active:scale-[0.98]"
-                  >
-                    Cancel
-                  </button>
-                </div>
+                <p
+                  v-if="apiKeyInput && !apiKeyInput.startsWith('sk-ant-')"
+                  class="text-xs text-amber-400"
+                >
+                  Anthropic API keys typically start with "sk-ant-"
+                </p>
+                <button
+                  @click="saveApiKey"
+                  :disabled="!apiKeyInput.trim()"
+                  class="w-full py-2.5 rounded-lg text-sm font-medium transition-all duration-150
+                         disabled:opacity-40 disabled:cursor-not-allowed"
+                  :class="apiKeyInput.trim()
+                    ? 'bg-primary text-primary-foreground hover:bg-primary/90 active:scale-[0.98]'
+                    : 'bg-secondary text-muted-foreground'"
+                >
+                  {{ currentStatus.hasKey ? 'Update Key' : 'Save Key' }}
+                </button>
               </template>
-
-              <p v-if="oauthError" class="text-xs text-destructive">{{ oauthError }}</p>
             </template>
 
-            <!-- API Key tab -->
-            <template v-else>
+            <!-- ── OPENROUTER ── -->
+            <template v-else-if="providerTab === 'openrouter'">
+              <p class="text-xs text-muted-foreground/70 leading-relaxed">
+                Sign in with OpenRouter to access 200+ models from Anthropic, OpenAI, Google, and more.
+              </p>
+
+              <button
+                @click="startOpenRouterOAuth"
+                :disabled="openrouterLoading"
+                class="w-full py-2.5 rounded-lg text-sm font-medium transition-all duration-150
+                       disabled:opacity-40 disabled:cursor-not-allowed
+                       bg-[#6366f1] text-white hover:bg-[#4f52d4] active:scale-[0.98]"
+              >
+                {{ openrouterLoading ? 'Waiting for callback...' : (currentStatus.hasKey ? 'Re-authenticate' : 'Sign in with OpenRouter') }}
+              </button>
+
+              <div class="flex items-center gap-2">
+                <div class="flex-1 h-px bg-border/40"/>
+                <span class="text-[0.65rem] text-muted-foreground/40 uppercase tracking-wider">or API key</span>
+                <div class="flex-1 h-px bg-border/40"/>
+              </div>
+
               <input
                 v-model="apiKeyInput"
                 type="password"
-                placeholder="sk-ant-api03-..."
+                placeholder="sk-or-v1-..."
                 class="w-full px-3 py-2.5 rounded-lg bg-secondary border border-border/50
                        text-sm text-foreground font-mono
                        placeholder:text-muted-foreground/40
                        focus:outline-none focus:ring-2 focus:ring-primary/50
                        transition-colors duration-150"
               />
-
               <p
-                v-if="apiKeyInput && !apiKeyInput.startsWith('sk-ant-')"
+                v-if="apiKeyInput && !apiKeyInput.startsWith('sk-or-v1-')"
                 class="text-xs text-amber-400"
               >
-                Anthropic API keys typically start with "sk-ant-"
+                OpenRouter API keys typically start with "sk-or-v1-"
               </p>
-
               <button
                 @click="saveApiKey"
                 :disabled="!apiKeyInput.trim()"
@@ -190,9 +252,45 @@
                   ? 'bg-primary text-primary-foreground hover:bg-primary/90 active:scale-[0.98]'
                   : 'bg-secondary text-muted-foreground'"
               >
-                {{ hasApiKey ? 'Update Key' : 'Save Key' }}
+                {{ currentStatus.hasKey ? 'Update Key' : 'Save Key' }}
               </button>
             </template>
+
+            <!-- ── OPENAI ── -->
+            <template v-else>
+              <p class="text-xs text-muted-foreground/70 leading-relaxed">
+                Enter your OpenAI API key. Note: ChatGPT Plus/Pro subscription does not include API access — a separate API key is required.
+              </p>
+
+              <input
+                v-model="apiKeyInput"
+                type="password"
+                placeholder="sk-..."
+                class="w-full px-3 py-2.5 rounded-lg bg-secondary border border-border/50
+                       text-sm text-foreground font-mono
+                       placeholder:text-muted-foreground/40
+                       focus:outline-none focus:ring-2 focus:ring-primary/50
+                       transition-colors duration-150"
+              />
+              <p
+                v-if="apiKeyInput && !apiKeyInput.startsWith('sk-')"
+                class="text-xs text-amber-400"
+              >
+                OpenAI API keys typically start with "sk-"
+              </p>
+              <button
+                @click="saveApiKey"
+                :disabled="!apiKeyInput.trim()"
+                class="w-full py-2.5 rounded-lg text-sm font-medium transition-all duration-150
+                       disabled:opacity-40 disabled:cursor-not-allowed"
+                :class="apiKeyInput.trim()
+                  ? 'bg-primary text-primary-foreground hover:bg-primary/90 active:scale-[0.98]'
+                  : 'bg-secondary text-muted-foreground'"
+              >
+                {{ currentStatus.hasKey ? 'Update Key' : 'Save Key' }}
+              </button>
+            </template>
+
           </div>
         </SettingsGroup>
       </div>
@@ -200,10 +298,10 @@
       <!-- Continue Button -->
       <button
         @click="$router.push('/chat')"
-        :disabled="!hasApiKey"
+        :disabled="!hasAnyKey"
         class="w-full max-w-sm py-3 rounded-xl text-sm font-semibold transition-all duration-200
                disabled:opacity-30 disabled:cursor-not-allowed"
-        :class="hasApiKey
+        :class="hasAnyKey
           ? 'bg-primary text-primary-foreground hover:bg-primary/90 active:scale-[0.98] shadow-lg shadow-primary/20'
           : 'bg-secondary text-muted-foreground'"
       >
@@ -223,22 +321,56 @@
 </template>
 
 <script setup>
-import { ref, watch } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { App } from '@capacitor/app'
 import { useMobileClaw } from '@/composables/useMobileClaw'
+import { isNative } from '@/lib/platform.js'
 import SettingsGroup from '@/components/settings/SettingsGroup.vue'
 
 const { workerReady, nodeVersion, updateConfig, getAuthStatus, exchangeOAuthCode } = useMobileClaw()
 
-const authTab = ref('oauth')
+// ── Provider labels ───────────────────────────────────────────────────────
+
+const PROVIDER_LABELS = {
+  anthropic: 'Claude Max',
+  openrouter: 'OpenRouter',
+  openai: 'OpenAI',
+}
+
+// ── Tab state ─────────────────────────────────────────────────────────────
+
+const providerTab = ref('anthropic')
+const authTab = ref('oauth')    // sub-tab within Anthropic
+
+// ── Per-provider auth status ──────────────────────────────────────────────
+
+const authStatus = ref({
+  anthropic: { hasKey: false, masked: '' },
+  openrouter: { hasKey: false, masked: '' },
+  openai: { hasKey: false, masked: '' },
+})
+
+const currentStatus = computed(() => authStatus.value[providerTab.value] || { hasKey: false, masked: '' })
+const hasAnyKey = computed(() => Object.values(authStatus.value).some(s => s.hasKey))
+
+// ── Shared API key input (reset on tab switch) ────────────────────────────
+
 const apiKeyInput = ref('')
-const hasApiKey = ref(false)
-const apiKeyMasked = ref('')
+
+// ── Anthropic OAuth state ─────────────────────────────────────────────────
+
 const oauthLoading = ref(false)
 const oauthError = ref('')
 const waitingForCode = ref(false)
 const oauthCodeInput = ref('')
+let _pendingVerifier = null
 
-// ── OAuth PKCE constants (matches orchestrator backend client) ────────────
+// ── OpenRouter OAuth state ────────────────────────────────────────────────
+
+const openrouterLoading = ref(false)
+let _appUrlListener = null
+
+// ── OAuth PKCE constants (Anthropic) ──────────────────────────────────────
 
 const OAUTH_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e'
 const OAUTH_AUTHORIZE_URL = 'https://claude.ai/oauth/authorize'
@@ -246,32 +378,43 @@ const OAUTH_TOKEN_URL = 'https://console.anthropic.com/v1/oauth/token'
 const OAUTH_REDIRECT_URI = 'https://console.anthropic.com/oauth/code/callback'
 const OAUTH_SCOPES = 'org:create_api_key user:profile user:inference'
 
-// PKCE verifier stored for the code exchange step
-let _pendingVerifier = null
+// ── OpenRouter OAuth constants ────────────────────────────────────────────
 
-// ── Helpers ──────────────────────────────────────────────────────────────
+const OPENROUTER_CALLBACK = 'io.mobileclaw.reference://openrouter/callback'
+const OPENROUTER_AUTH_URL = 'https://openrouter.ai/auth'
 
-async function loadAuthStatus() {
+// ── Auth status helpers ───────────────────────────────────────────────────
+
+async function loadAuthStatus(provider) {
   if (!workerReady.value) return
   try {
-    const status = await getAuthStatus()
-    hasApiKey.value = status.hasKey
-    apiKeyMasked.value = status.masked || ''
+    const status = await getAuthStatus(provider)
+    authStatus.value[provider] = { hasKey: status.hasKey, masked: status.masked || '' }
   } catch { /* non-fatal */ }
+}
+
+async function loadAllAuthStatus() {
+  await Promise.all(['anthropic', 'openrouter', 'openai'].map(p => loadAuthStatus(p)))
 }
 
 async function saveApiKey() {
   if (!apiKeyInput.value.trim()) return
   await updateConfig({
     action: 'setApiKey',
-    provider: 'anthropic',
+    provider: providerTab.value,
     apiKey: apiKeyInput.value.trim(),
   })
   apiKeyInput.value = ''
-  await loadAuthStatus()
+  await loadAuthStatus(providerTab.value)
 }
 
-// ── PKCE helpers ─────────────────────────────────────────────────────────
+function switchProvider(tab) {
+  providerTab.value = tab
+  apiKeyInput.value = ''
+  oauthError.value = ''
+}
+
+// ── Anthropic PKCE helpers ────────────────────────────────────────────────
 
 function generateRandomBytes(length) {
   const arr = new Uint8Array(length)
@@ -293,7 +436,7 @@ async function generatePKCE() {
   return { verifier, challenge }
 }
 
-// ── OAuth flow ────────────────────────────────────────────────────────────
+// ── Anthropic OAuth flow ──────────────────────────────────────────────────
 
 async function startOAuthPkce() {
   oauthLoading.value = true
@@ -310,16 +453,14 @@ async function startOAuthPkce() {
       scope: OAUTH_SCOPES,
       code_challenge: challenge,
       code_challenge_method: 'S256',
-      state: verifier, // Anthropic convention: state = verifier
+      state: verifier,
     })
 
     const authUrl = `${OAUTH_AUTHORIZE_URL}?${params.toString()}`
-
     if (typeof window !== 'undefined' && window.open) {
       window.open(authUrl, '_system')
     }
 
-    // Show code input — Anthropic's callback page displays the code for the user to copy
     waitingForCode.value = true
   } catch (e) {
     oauthError.value = `OAuth error: ${e.message}`
@@ -336,11 +477,9 @@ async function submitOAuthCode() {
   oauthError.value = ''
 
   try {
-    // Anthropic's callback returns "code#state" — strip #state suffix
     const cleanCode = rawCode.split('#')[0].split('&')[0]
     const verifier = _pendingVerifier
 
-    // Delegate token exchange to Node.js worker (bypasses CORS)
     const result = await exchangeOAuthCode(OAUTH_TOKEN_URL, {
       grant_type: 'authorization_code',
       client_id: OAUTH_CLIENT_ID,
@@ -366,7 +505,7 @@ async function submitOAuthCode() {
     oauthCodeInput.value = ''
     waitingForCode.value = false
     _pendingVerifier = null
-    await loadAuthStatus()
+    await loadAuthStatus('anthropic')
   } catch (e) {
     oauthError.value = e.message
   } finally {
@@ -381,9 +520,57 @@ function cancelOAuth() {
   _pendingVerifier = null
 }
 
-// ── Lifecycle ────────────────────────────────────────────────────────────
+// ── OpenRouter OAuth flow ─────────────────────────────────────────────────
+
+function startOpenRouterOAuth() {
+  openrouterLoading.value = true
+  const authUrl = `${OPENROUTER_AUTH_URL}?callback_url=${encodeURIComponent(OPENROUTER_CALLBACK)}`
+  if (typeof window !== 'undefined' && window.open) {
+    window.open(authUrl, '_system')
+  }
+}
+
+// ── App URL listener (deep links) ─────────────────────────────────────────
+
+async function handleAppUrl(event) {
+  const url = event.url || ''
+
+  // OpenRouter returns the API key as ?code=<key> in the callback URL
+  if (url.includes('openrouter/callback')) {
+    openrouterLoading.value = false
+    try {
+      const parsed = new URL(url)
+      const key = parsed.searchParams.get('code')
+      if (key) {
+        await updateConfig({
+          action: 'setApiKey',
+          provider: 'openrouter',
+          apiKey: key,
+        })
+        await loadAuthStatus('openrouter')
+        providerTab.value = 'openrouter'
+      }
+    } catch { /* non-fatal */ }
+  }
+}
+
+// ── Lifecycle ─────────────────────────────────────────────────────────────
+
+onMounted(async () => {
+  if (isNative) {
+    _appUrlListener = await App.addListener('appUrlOpen', handleAppUrl)
+  }
+})
+
+onUnmounted(() => {
+  if (_appUrlListener) {
+    _appUrlListener.remove()
+    _appUrlListener = null
+  }
+  openrouterLoading.value = false
+})
 
 watch(workerReady, (ready) => {
-  if (ready) loadAuthStatus()
+  if (ready) loadAllAuthStatus()
 }, { immediate: true })
 </script>

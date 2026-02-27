@@ -157,7 +157,12 @@ async function handleSend(text) {
   currentStreamingMessage.value = null
 
   try {
-    const sessionKey = await sendMessage(text)
+    // Read active provider+model from settings (set by SettingsView)
+    const _m = (() => { try { return JSON.parse(localStorage.getItem('mobileclaw_active_model') || '{}') } catch { return {} } })()
+    const sessionKey = await sendMessage(text, 'main', {
+      provider: _m.provider || undefined,
+      model: _m.model || undefined,
+    })
   } catch (err) {
     isRunning.value = false
     messages.value.push({

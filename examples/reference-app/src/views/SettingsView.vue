@@ -57,6 +57,48 @@
         </div>
       </div>
 
+      <!-- Provider & Model -->
+      <SettingsGroup label="PROVIDER & MODEL">
+        <div class="px-4 py-3 space-y-3">
+          <!-- Provider pills -->
+          <div>
+            <div class="text-[0.7rem] text-muted-foreground/70 mb-1.5 font-medium">Active Provider</div>
+            <div v-if="configuredProviders.length === 0" class="text-xs text-muted-foreground/60">
+              No providers configured — go to Setup to add credentials.
+            </div>
+            <div v-else class="flex gap-1.5 flex-wrap">
+              <button
+                v-for="p in configuredProviders"
+                :key="p"
+                @click="setActiveProvider(p)"
+                class="px-3 py-1.5 rounded-full text-xs font-medium transition-all duration-150"
+                :class="activeProvider === p
+                  ? 'bg-primary text-primary-foreground shadow-sm'
+                  : 'bg-secondary text-muted-foreground hover:text-foreground'"
+              >
+                {{ PROVIDER_LABELS[p] }}
+              </button>
+            </div>
+          </div>
+
+          <!-- Model dropdown -->
+          <div v-if="availableModels.length > 0">
+            <div class="text-[0.7rem] text-muted-foreground/70 mb-1.5 font-medium">Model</div>
+            <select
+              v-model="activeModel"
+              @change="saveActiveModel"
+              class="w-full px-3 py-2 rounded-lg bg-secondary border border-border/50
+                     text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
+            >
+              <option v-for="m in availableModels" :key="m.id" :value="m.id">
+                {{ m.name }}{{ m.default ? ' (default)' : '' }}
+              </option>
+            </select>
+          </div>
+          <div v-else-if="loadingModels" class="text-xs text-muted-foreground/60">Loading models...</div>
+        </div>
+      </SettingsGroup>
+
       <!-- API Key -->
       <SettingsGroup label="API KEY">
         <SettingsRow
@@ -785,7 +827,7 @@ const router = useRouter()
 const {
   workerReady, nodeVersion,
   readFile, writeFile, updateConfig,
-  getAuthStatus, listSessions, clearConversation,
+  getAuthStatus, getModels, listSessions, clearConversation,
   invokeTool,
 } = useMobileClaw()
 
@@ -822,6 +864,65 @@ const {
 function goBack() {
   if (window.history.length > 1) router.back()
   else router.push('/chat')
+}
+
+// ── Provider & Model ─────────────────────────────────────────────────────────
+
+const PROVIDER_LABELS = { anthropic: 'Claude Max', openrouter: 'OpenRouter', openai: 'OpenAI' }
+const ALL_PROVIDERS = ['anthropic', 'openrouter', 'openai']
+
+const providerAuthStatus = ref({ anthropic: false, openrouter: false, openai: false })
+const configuredProviders = computed(() => ALL_PROVIDERS.filter(p => providerAuthStatus.value[p]))
+
+const _stored = (() => { try { return JSON.parse(localStorage.getItem('mobileclaw_active_model') || '{}') } catch { return {} } })()
+const activeProvider = ref(_stored.provider || 'anthropic')
+const activeModel = ref(_stored.model || '')
+const availableModels = ref([])
+const loadingModels = ref(false)
+
+async function loadProviderAuthStatus() {
+  const results = await Promise.allSettled(
+    ALL_PROVIDERS.map(p => getAuthStatus(p))
+  )
+  results.forEach((r, i) => {
+    providerAuthStatus.value[ALL_PROVIDERS[i]] = r.status === 'fulfilled' && r.value?.hasKey
+  })
+  // If active provider lost its key, switch to first configured one
+  if (!providerAuthStatus.value[activeProvider.value] && configuredProviders.value.length > 0) {
+    activeProvider.value = configuredProviders.value[0]
+  }
+}
+
+async function loadModelsForProvider(provider) {
+  loadingModels.value = true
+  availableModels.value = []
+  try {
+    const result = await getModels(provider)
+    availableModels.value = result.models || []
+    // If stored model isn't in the list for this provider, pick the default
+    const found = availableModels.value.find(m => m.id === activeModel.value)
+    if (!found) {
+      const def = availableModels.value.find(m => m.default) || availableModels.value[0]
+      activeModel.value = def?.id || ''
+      saveActiveModel()
+    }
+  } catch { /* non-fatal */ } finally {
+    loadingModels.value = false
+  }
+}
+
+async function setActiveProvider(provider) {
+  activeProvider.value = provider
+  activeModel.value = ''
+  saveActiveModel()
+  await loadModelsForProvider(provider)
+}
+
+function saveActiveModel() {
+  localStorage.setItem('mobileclaw_active_model', JSON.stringify({
+    provider: activeProvider.value,
+    model: activeModel.value,
+  }))
 }
 
 // ── API Key ──────────────────────────────────────────────────────────────────
@@ -1276,6 +1377,7 @@ watch(workerReady, (ready) => {
     loadFile()
     loadMemorySettings()
     refreshCount()
+    loadProviderAuthStatus().then(() => loadModelsForProvider(activeProvider.value)).catch(() => {})
   }
 }, { immediate: true })
 </script>
