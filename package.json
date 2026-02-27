@@ -1,6 +1,6 @@
 {
   "name": "capacitor-mobile-claw",
-  "version": "1.4.6",
+  "version": "1.4.7",
   "description": "On-device AI agent engine for Capacitor apps — embedded Node.js worker with LLM, file tools, code execution, git, and extensible MCP server",
   "main": "dist/esm/index.js",
   "types": "dist/esm/index.d.ts",
@@ -16,6 +16,7 @@
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
     "format": "biome format --write .",
+    "prepare": "npm run build",
     "prepack": "npm run build"
   },
   "files": [

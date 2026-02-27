@@ -30,6 +30,7 @@
     "@capacitor/android": "^8.1.0",
     "@capacitor/cli": "^8.1.0",
     "@capacitor/ios": "^8.1.0",
+    "typescript": "^5.0.0",
     "@tailwindcss/vite": "^4.2.0",
     "@vitejs/plugin-vue": "^5.2.0",
     "tailwindcss": "^4.2.0",
