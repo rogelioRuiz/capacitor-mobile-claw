@@ -14,11 +14,18 @@
 import { Capacitor } from '@capacitor/core'
 import type {
   AuthStatus,
+  CronJobInput,
+  CronJobRecord,
+  CronRunRecord,
+  CronSkillInput,
+  CronSkillRecord,
   FileReadResult,
+  HeartbeatConfig,
   MobileClawEvent,
   MobileClawEventName,
   MobileClawInitOptions,
   MobileClawReadyInfo,
+  SchedulerConfig,
   SessionHistoryResult,
   SessionInfo,
   SessionListResult,
@@ -45,6 +52,7 @@ export class MobileClawEngine {
   private listeners = new Map<string, Set<MessageHandler>>()
   private initPromise: Promise<MobileClawReadyInfo> | null = null
   private _mcpManager: McpServerManager | null = null
+  private _mobileCron: any = null
 
   // ── Public getters ─────────────────────────────────────────────────────
 
@@ -169,6 +177,10 @@ export class MobileClawEngine {
 
       const readyInfo = await readyPromise
 
+      await this._initMobileCron().catch((err) => {
+        console.warn('[MobileClaw] MobileCron init failed (non-fatal):', err)
+      })
+
       return readyInfo
     } catch (e: any) {
       this._available = false
@@ -176,6 +188,66 @@ export class MobileClawEngine {
       this._loading = false
       return { nodeVersion: '', openclawRoot: '', mcpToolCount: 0 }
     }
+  }
+
+  private async _initMobileCron(): Promise<void> {
+    let MobileCron: any
+    try {
+      const mod = await import('capacitor-mobilecron')
+      MobileCron = mod.MobileCron
+      this._mobileCron = MobileCron
+    } catch {
+      return
+    }
+
+    const schedulerConfig = await this.getSchedulerConfig()
+    if (schedulerConfig.scheduler.enabled) {
+      await MobileCron.register({
+        name: 'sentinel-heartbeat',
+        schedule: {
+          kind: 'every',
+          everyMs: schedulerConfig.heartbeat.everyMs || 1_800_000,
+        },
+        activeHours: schedulerConfig.heartbeat.activeHours,
+        priority: 'normal',
+        requiresNetwork: true,
+      })
+      await MobileCron.setMode({
+        mode: schedulerConfig.scheduler.schedulingMode,
+      })
+    }
+
+    MobileCron.addListener('jobDue', (event: any) => {
+      this.send({
+        type: 'heartbeat.wake',
+        source: event?.source || 'mobilecron',
+        timestamp: event?.firedAt ?? Date.now(),
+      }).catch(() => {})
+    })
+
+    // Android WorkManager fires 'nativeWake' (not 'jobDue') for background wakes.
+    // The native CronWorker IS the sentinel timer on Android — relay it as heartbeat.wake.
+    MobileCron.addListener('nativeWake', (event: any) => {
+      this.send({
+        type: 'heartbeat.wake',
+        source: event?.source || 'workmanager',
+        timestamp: Date.now(),
+      }).catch(() => {})
+    })
+
+    MobileCron.addListener('overdueJobs', (event: any) => {
+      this._dispatch({ type: 'scheduler.overdue', ...event })
+      this.send({
+        type: 'heartbeat.wake',
+        source: 'foreground',
+        timestamp: Date.now(),
+      }).catch(() => {})
+    })
+
+    this._onMessage('scheduler.status', (msg) => {
+      if (!this._mobileCron) return
+      this._mobileCron.setMode({ mode: msg.mode }).catch(() => {})
+    })
   }
 
   async isReady(): Promise<{ ready: boolean }> {
@@ -190,6 +262,17 @@ export class MobileClawEngine {
       return
     }
     await this.nodePlugin.send({ eventName: 'message', args: [message] })
+  }
+
+  private async _waitForMessage<T>(type: string, request?: Record<string, unknown>): Promise<T> {
+    return new Promise((resolve) => {
+      this._onMessage(type, (msg) => resolve(msg as T), { once: true })
+      if (request) {
+        this.send(request).catch((err) => {
+          console.warn(`[MobileClaw] send failed for ${type}:`, err)
+        })
+      }
+    })
   }
 
   /** Internal message listener (returns unsubscribe fn) */
@@ -307,6 +390,137 @@ export class MobileClawEngine {
     })
   }
 
+  // ── Scheduler / heartbeat / cron ─────────────────────────────────────
+
+  async setSchedulerConfig(config: Partial<SchedulerConfig>): Promise<void> {
+    const result = await this._waitForMessage<{ success: boolean; error?: string }>('scheduler.set.result', {
+      type: 'scheduler.set',
+      config,
+    })
+    if (!result.success) {
+      throw new Error(result.error || 'Failed to set scheduler config')
+    }
+  }
+
+  async getSchedulerConfig(): Promise<{ scheduler: SchedulerConfig; heartbeat: HeartbeatConfig }> {
+    return this._waitForMessage<{ scheduler: SchedulerConfig; heartbeat: HeartbeatConfig }>('scheduler.get.result', {
+      type: 'scheduler.get',
+    })
+  }
+
+  async setHeartbeat(config: Partial<HeartbeatConfig>): Promise<void> {
+    const result = await this._waitForMessage<{ success: boolean; error?: string }>('heartbeat.set.result', {
+      type: 'heartbeat.set',
+      config,
+    })
+    if (!result.success) {
+      throw new Error(result.error || 'Failed to set heartbeat config')
+    }
+  }
+
+  async triggerHeartbeatWake(source = 'manual'): Promise<void> {
+    await this.send({ type: 'heartbeat.wake', source, timestamp: Date.now() })
+  }
+
+  async addCronJob(job: CronJobInput): Promise<CronJobRecord> {
+    const result = await this._waitForMessage<{
+      success: boolean
+      job?: CronJobRecord
+      error?: string
+    }>('cron.job.add.result', { type: 'cron.job.add', job })
+    if (!result.success || !result.job) {
+      throw new Error(result.error || 'Failed to add cron job')
+    }
+    return result.job
+  }
+
+  async updateCronJob(id: string, patch: Partial<CronJobInput>): Promise<void> {
+    const result = await this._waitForMessage<{ success: boolean; error?: string }>('cron.job.update.result', {
+      type: 'cron.job.update',
+      id,
+      patch,
+    })
+    if (!result.success) {
+      throw new Error(result.error || 'Failed to update cron job')
+    }
+  }
+
+  async removeCronJob(id: string): Promise<void> {
+    const result = await this._waitForMessage<{ success: boolean; error?: string }>('cron.job.remove.result', {
+      type: 'cron.job.remove',
+      id,
+    })
+    if (!result.success) {
+      throw new Error(result.error || 'Failed to remove cron job')
+    }
+  }
+
+  async listCronJobs(): Promise<CronJobRecord[]> {
+    const result = await this._waitForMessage<{ jobs: CronJobRecord[] }>('cron.job.list.result', {
+      type: 'cron.job.list',
+    })
+    return result.jobs || []
+  }
+
+  async runCronJob(id: string): Promise<void> {
+    const result = await this._waitForMessage<{ success: boolean; error?: string }>('cron.job.run.result', {
+      type: 'cron.job.run',
+      id,
+    })
+    if (!result.success) {
+      throw new Error(result.error || 'Failed to run cron job')
+    }
+  }
+
+  async getCronRunHistory(jobId?: string, limit = 50): Promise<CronRunRecord[]> {
+    const result = await this._waitForMessage<{ runs: CronRunRecord[] }>('cron.runs.list.result', {
+      type: 'cron.runs.list',
+      ...(jobId ? { jobId } : {}),
+      limit,
+    })
+    return result.runs || []
+  }
+
+  async addSkill(skill: CronSkillInput): Promise<CronSkillRecord> {
+    const result = await this._waitForMessage<{
+      success: boolean
+      skill?: CronSkillRecord
+      error?: string
+    }>('cron.skill.add.result', { type: 'cron.skill.add', skill })
+    if (!result.success || !result.skill) {
+      throw new Error(result.error || 'Failed to add skill')
+    }
+    return result.skill
+  }
+
+  async updateSkill(id: string, patch: Partial<CronSkillInput>): Promise<void> {
+    const result = await this._waitForMessage<{ success: boolean; error?: string }>('cron.skill.update.result', {
+      type: 'cron.skill.update',
+      id,
+      patch,
+    })
+    if (!result.success) {
+      throw new Error(result.error || 'Failed to update skill')
+    }
+  }
+
+  async removeSkill(id: string): Promise<void> {
+    const result = await this._waitForMessage<{ success: boolean; error?: string }>('cron.skill.remove.result', {
+      type: 'cron.skill.remove',
+      id,
+    })
+    if (!result.success) {
+      throw new Error(result.error || 'Failed to remove skill')
+    }
+  }
+
+  async listSkills(): Promise<CronSkillRecord[]> {
+    const result = await this._waitForMessage<{ skills: CronSkillRecord[] }>('cron.skill.list.result', {
+      type: 'cron.skill.list',
+    })
+    return result.skills || []
+  }
+
   // ── File operations ────────────────────────────────────────────────────
 
   async readFile(path: string): Promise<FileReadResult> {
@@ -399,6 +613,15 @@ export class MobileClawEngine {
     toolPreExecute: 'tool.pre_execute',
     toolPreExecuteExpired: 'tool.pre_execute.expired',
     workerReady: 'worker.ready',
+    heartbeatStarted: 'heartbeat.started',
+    heartbeatCompleted: 'heartbeat.completed',
+    heartbeatSkipped: 'heartbeat.skipped',
+    cronJobStarted: 'cron.job.started',
+    cronJobCompleted: 'cron.job.completed',
+    cronJobError: 'cron.job.error',
+    cronNotification: 'cron.notification',
+    schedulerStatus: 'scheduler.status',
+    schedulerOverdue: 'scheduler.overdue',
   }
 
   addListener(eventName: MobileClawEventName, handler: (event: MobileClawEvent) => void): { remove: () => void } {

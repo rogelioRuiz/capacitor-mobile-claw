@@ -9,12 +9,19 @@
 import { WebPlugin } from '@capacitor/core'
 import type {
   AuthStatus,
+  CronJobInput,
+  CronJobRecord,
+  CronRunRecord,
+  CronSkillInput,
+  CronSkillRecord,
   FileReadResult,
+  HeartbeatConfig,
   MobileClawEvent,
   MobileClawEventName,
   MobileClawInitOptions,
   MobileClawPlugin,
   MobileClawReadyInfo,
+  SchedulerConfig,
   SessionHistoryResult,
   SessionInfo,
   SessionListResult,
@@ -51,6 +58,62 @@ export class MobileClawWeb extends WebPlugin implements MobileClawPlugin {
 
   async getAuthStatus(): Promise<AuthStatus> {
     return this.engine.getAuthStatus()
+  }
+
+  async setSchedulerConfig(config: Partial<SchedulerConfig>): Promise<void> {
+    return this.engine.setSchedulerConfig(config)
+  }
+
+  async getSchedulerConfig(): Promise<{ scheduler: SchedulerConfig; heartbeat: HeartbeatConfig }> {
+    return this.engine.getSchedulerConfig()
+  }
+
+  async setHeartbeat(config: Partial<HeartbeatConfig>): Promise<void> {
+    return this.engine.setHeartbeat(config)
+  }
+
+  async triggerHeartbeatWake(source?: string): Promise<void> {
+    return this.engine.triggerHeartbeatWake(source)
+  }
+
+  async addCronJob(job: CronJobInput): Promise<CronJobRecord> {
+    return this.engine.addCronJob(job)
+  }
+
+  async updateCronJob(id: string, patch: Partial<CronJobInput>): Promise<void> {
+    return this.engine.updateCronJob(id, patch)
+  }
+
+  async removeCronJob(id: string): Promise<void> {
+    return this.engine.removeCronJob(id)
+  }
+
+  async listCronJobs(): Promise<CronJobRecord[]> {
+    return this.engine.listCronJobs()
+  }
+
+  async runCronJob(id: string): Promise<void> {
+    return this.engine.runCronJob(id)
+  }
+
+  async getCronRunHistory(jobId?: string, limit?: number): Promise<CronRunRecord[]> {
+    return this.engine.getCronRunHistory(jobId, limit)
+  }
+
+  async addSkill(skill: CronSkillInput): Promise<CronSkillRecord> {
+    return this.engine.addSkill(skill)
+  }
+
+  async updateSkill(id: string, patch: Partial<CronSkillInput>): Promise<void> {
+    return this.engine.updateSkill(id, patch)
+  }
+
+  async removeSkill(id: string): Promise<void> {
+    return this.engine.removeSkill(id)
+  }
+
+  async listSkills(): Promise<CronSkillRecord[]> {
+    return this.engine.listSkills()
   }
 
   async readFile(options: { path: string }): Promise<FileReadResult> {

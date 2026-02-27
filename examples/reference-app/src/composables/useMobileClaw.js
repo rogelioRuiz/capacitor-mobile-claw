@@ -80,6 +80,9 @@ async function _doInit() {
     loading.value = engine.loading
     error.value = engine.error
 
+    // ── Dev helper: expose engine on window for CDP testing ──
+    window.__mobileClaw = engine
+
     // ── Index workspace memory files (non-blocking) ──
     reindex(
       (path) => engine.readFile(path),
@@ -179,6 +182,8 @@ export function useMobileClaw() {
   if (isNative && !initPromise) init()
 
   return {
+    engine,
+
     // State (reactive Vue refs)
     available,
     workerReady,

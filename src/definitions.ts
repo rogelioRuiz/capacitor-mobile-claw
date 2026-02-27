@@ -61,6 +61,46 @@ export interface MobileClawPlugin {
    */
   getAuthStatus(): Promise<AuthStatus>
 
+  // ── Scheduler / heartbeat / cron ────────────────────────────────────
+
+  /**
+   * Update scheduler config.
+   */
+  setSchedulerConfig(config: Partial<SchedulerConfig>): Promise<void>
+
+  /**
+   * Read scheduler + heartbeat config.
+   */
+  getSchedulerConfig(): Promise<{ scheduler: SchedulerConfig; heartbeat: HeartbeatConfig }>
+
+  /**
+   * Update heartbeat config.
+   */
+  setHeartbeat(config: Partial<HeartbeatConfig>): Promise<void>
+
+  /**
+   * Trigger an immediate heartbeat wake.
+   */
+  triggerHeartbeatWake(source?: string): Promise<void>
+
+  /**
+   * Add/update/remove/list cron jobs and runs.
+   */
+  addCronJob(job: CronJobInput): Promise<CronJobRecord>
+  updateCronJob(id: string, patch: Partial<CronJobInput>): Promise<void>
+  removeCronJob(id: string): Promise<void>
+  listCronJobs(): Promise<CronJobRecord[]>
+  runCronJob(id: string): Promise<void>
+  getCronRunHistory(jobId?: string, limit?: number): Promise<CronRunRecord[]>
+
+  /**
+   * Add/update/remove/list cron skills.
+   */
+  addSkill(skill: CronSkillInput): Promise<CronSkillRecord>
+  updateSkill(id: string, patch: Partial<CronSkillInput>): Promise<void>
+  removeSkill(id: string): Promise<void>
+  listSkills(): Promise<CronSkillRecord[]>
+
   // ── File operations ──────────────────────────────────────────────────
 
   /**
@@ -204,6 +244,85 @@ export interface SessionHistoryResult {
   error?: string
 }
 
+// ── Scheduler / heartbeat / cron ────────────────────────────────────────
+
+export interface ActiveHours {
+  start: string
+  end: string
+  tz?: string
+}
+
+export interface SchedulerConfig {
+  enabled: boolean
+  schedulingMode: 'eco' | 'balanced' | 'aggressive'
+  runOnCharging: boolean
+  globalActiveHours?: ActiveHours
+}
+
+export interface HeartbeatConfig {
+  enabled: boolean
+  everyMs: number
+  prompt?: string
+  skillId?: string
+  activeHours?: ActiveHours
+  nextRunAt?: number
+  lastHash?: string
+  lastSentAt?: number
+}
+
+export interface CronSkillInput {
+  name: string
+  allowedTools?: string[]
+  systemPrompt?: string
+  model?: string
+  maxTurns?: number
+  timeoutMs?: number
+}
+
+export interface CronSkillRecord extends CronSkillInput {
+  id: string
+  createdAt: number
+  updatedAt: number
+}
+
+export interface CronJobInput {
+  name: string
+  enabled?: boolean
+  sessionTarget?: 'isolated' | 'main'
+  wakeMode?: 'now' | 'next-heartbeat'
+  schedule: { kind: 'every' | 'at'; everyMs?: number; atMs?: number }
+  skillId: string
+  prompt: string
+  deliveryMode?: 'notification' | 'webhook' | 'none'
+  deliveryWebhookUrl?: string
+  deliveryNotificationTitle?: string
+  activeHours?: ActiveHours
+}
+
+export interface CronJobRecord extends CronJobInput {
+  id: string
+  lastRunAt?: number
+  nextRunAt?: number
+  lastRunStatus?: string
+  lastError?: string
+  lastDurationMs?: number
+  consecutiveErrors: number
+  createdAt: number
+  updatedAt: number
+}
+
+export interface CronRunRecord {
+  id: number
+  jobId: string
+  startedAt: number
+  endedAt?: number
+  status: 'ok' | 'error' | 'skipped' | 'suppressed' | 'deduped'
+  durationMs?: number
+  error?: string
+  responseText?: string
+  wakeSource?: string
+}
+
 // ── Tool invocation ────────────────────────────────────────────────────────
 
 export interface ToolInvokeResult {
@@ -221,6 +340,15 @@ export type MobileClawEventName =
   | 'toolPreExecute'
   | 'toolPreExecuteExpired'
   | 'workerReady'
+  | 'heartbeatStarted'
+  | 'heartbeatCompleted'
+  | 'heartbeatSkipped'
+  | 'cronJobStarted'
+  | 'cronJobCompleted'
+  | 'cronJobError'
+  | 'cronNotification'
+  | 'schedulerStatus'
+  | 'schedulerOverdue'
 
 export type MobileClawEvent =
   | AgentEvent
@@ -229,6 +357,15 @@ export type MobileClawEvent =
   | ToolPreExecuteEvent
   | ToolPreExecuteExpiredEvent
   | WorkerReadyEvent
+  | HeartbeatStartedEvent
+  | HeartbeatCompletedEvent
+  | HeartbeatSkippedEvent
+  | CronJobStartedEvent
+  | CronJobCompletedEvent
+  | CronJobErrorEvent
+  | CronNotificationEvent
+  | SchedulerStatusEvent
+  | SchedulerOverdueEvent
 
 export interface AgentEvent {
   eventType: 'text_delta' | 'tool_use' | 'tool_result' | 'thinking' | 'error'
@@ -265,4 +402,55 @@ export interface WorkerReadyEvent {
   nodeVersion: string
   openclawRoot: string
   mcpToolCount?: number
+}
+
+export interface HeartbeatStartedEvent {
+  source: string
+}
+
+export interface HeartbeatCompletedEvent {
+  status: string
+  reason?: string
+  durationMs: number
+  responsePreview?: string
+}
+
+export interface HeartbeatSkippedEvent {
+  reason: string
+}
+
+export interface CronJobStartedEvent {
+  jobId: string
+  jobName: string
+}
+
+export interface CronJobCompletedEvent {
+  jobId: string
+  status: string
+  durationMs: number
+  responsePreview?: string
+}
+
+export interface CronJobErrorEvent {
+  jobId: string
+  error: string
+  consecutiveErrors: number
+}
+
+export interface CronNotificationEvent {
+  title: string
+  body: string
+  jobId?: string
+  source: string
+}
+
+export interface SchedulerStatusEvent {
+  enabled: boolean
+  mode: string
+  nextDueAt?: number
+  heartbeatNext?: number
+}
+
+export interface SchedulerOverdueEvent {
+  [key: string]: unknown
 }

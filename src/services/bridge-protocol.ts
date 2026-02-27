@@ -3,6 +3,16 @@
  * Messages are JSON-serialized and passed via Capacitor-NodeJS message channel.
  */
 
+import type {
+  CronJobInput,
+  CronJobRecord,
+  CronRunRecord,
+  CronSkillInput,
+  CronSkillRecord,
+  HeartbeatConfig,
+  SchedulerConfig,
+} from '../definitions'
+
 // ── UI → Node.js ────────────────────────────────────────────────────────────
 
 export interface AgentStartMessage {
@@ -91,6 +101,77 @@ export interface ToolPreExecuteResultMessage {
   denyReason?: string
 }
 
+export interface HeartbeatWakeMessage {
+  type: 'heartbeat.wake'
+  source?: string
+  timestamp?: number
+}
+
+export interface HeartbeatSetMessage {
+  type: 'heartbeat.set'
+  config: Partial<HeartbeatConfig>
+}
+
+export interface SchedulerSetMessage {
+  type: 'scheduler.set'
+  config: Partial<SchedulerConfig>
+}
+
+export interface SchedulerGetMessage {
+  type: 'scheduler.get'
+}
+
+export interface CronJobAddMessage {
+  type: 'cron.job.add'
+  job: CronJobInput
+}
+
+export interface CronJobUpdateMessage {
+  type: 'cron.job.update'
+  id: string
+  patch: Partial<CronJobInput>
+}
+
+export interface CronJobRemoveMessage {
+  type: 'cron.job.remove'
+  id: string
+}
+
+export interface CronJobListMessage {
+  type: 'cron.job.list'
+}
+
+export interface CronJobRunMessage {
+  type: 'cron.job.run'
+  id: string
+}
+
+export interface CronRunsListMessage {
+  type: 'cron.runs.list'
+  jobId?: string
+  limit?: number
+}
+
+export interface CronSkillAddMessage {
+  type: 'cron.skill.add'
+  skill: CronSkillInput
+}
+
+export interface CronSkillUpdateMessage {
+  type: 'cron.skill.update'
+  id: string
+  patch: Partial<CronSkillInput>
+}
+
+export interface CronSkillRemoveMessage {
+  type: 'cron.skill.remove'
+  id: string
+}
+
+export interface CronSkillListMessage {
+  type: 'cron.skill.list'
+}
+
 export type UIToNodeMessage =
   | AgentStartMessage
   | AgentStopMessage
@@ -103,6 +184,20 @@ export type UIToNodeMessage =
   | FileWriteMessage
   | SkillStartMessage
   | ToolPreExecuteResultMessage
+  | HeartbeatWakeMessage
+  | HeartbeatSetMessage
+  | SchedulerSetMessage
+  | SchedulerGetMessage
+  | CronJobAddMessage
+  | CronJobUpdateMessage
+  | CronJobRemoveMessage
+  | CronJobListMessage
+  | CronJobRunMessage
+  | CronRunsListMessage
+  | CronSkillAddMessage
+  | CronSkillUpdateMessage
+  | CronSkillRemoveMessage
+  | CronSkillListMessage
 
 // ── Node.js → UI ────────────────────────────────────────────────────────────
 
@@ -192,6 +287,146 @@ export interface ToolPreExecuteExpiredMessage {
   toolName: string
 }
 
+export interface HeartbeatStartedMessage {
+  type: 'heartbeat.started'
+  source: string
+}
+
+export interface HeartbeatCompletedMessage {
+  type: 'heartbeat.completed'
+  status: string
+  reason?: string
+  durationMs: number
+  responsePreview?: string
+}
+
+export interface HeartbeatSkippedMessage {
+  type: 'heartbeat.skipped'
+  reason: string
+}
+
+export interface CronJobStartedMessage {
+  type: 'cron.job.started'
+  jobId: string
+  jobName: string
+}
+
+export interface CronJobCompletedMessage {
+  type: 'cron.job.completed'
+  jobId: string
+  status: string
+  durationMs: number
+  responsePreview?: string
+}
+
+export interface CronJobErrorMessage {
+  type: 'cron.job.error'
+  jobId: string
+  error: string
+  consecutiveErrors: number
+}
+
+export interface CronNotificationMessage {
+  type: 'cron.notification'
+  title: string
+  body: string
+  jobId?: string
+  source: string
+}
+
+export interface SchedulerStatusMessage {
+  type: 'scheduler.status'
+  enabled: boolean
+  mode: string
+  nextDueAt?: number
+  heartbeatNext?: number
+}
+
+export interface SchedulerOverdueMessage {
+  type: 'scheduler.overdue'
+  [key: string]: unknown
+}
+
+export interface HeartbeatSetResultMessage {
+  type: 'heartbeat.set.result'
+  success: boolean
+  heartbeat?: HeartbeatConfig
+  error?: string
+}
+
+export interface SchedulerSetResultMessage {
+  type: 'scheduler.set.result'
+  success: boolean
+  scheduler?: SchedulerConfig
+  error?: string
+}
+
+export interface SchedulerGetResultMessage {
+  type: 'scheduler.get.result'
+  scheduler: SchedulerConfig
+  heartbeat: HeartbeatConfig
+}
+
+export interface CronJobAddResultMessage {
+  type: 'cron.job.add.result'
+  success: boolean
+  job?: CronJobRecord
+  error?: string
+}
+
+export interface CronJobUpdateResultMessage {
+  type: 'cron.job.update.result'
+  success: boolean
+  error?: string
+}
+
+export interface CronJobRemoveResultMessage {
+  type: 'cron.job.remove.result'
+  success: boolean
+  error?: string
+}
+
+export interface CronJobListResultMessage {
+  type: 'cron.job.list.result'
+  jobs: CronJobRecord[]
+}
+
+export interface CronJobRunResultMessage {
+  type: 'cron.job.run.result'
+  success: boolean
+  id: string
+  error?: string
+}
+
+export interface CronRunsListResultMessage {
+  type: 'cron.runs.list.result'
+  runs: CronRunRecord[]
+}
+
+export interface CronSkillAddResultMessage {
+  type: 'cron.skill.add.result'
+  success: boolean
+  skill?: CronSkillRecord
+  error?: string
+}
+
+export interface CronSkillUpdateResultMessage {
+  type: 'cron.skill.update.result'
+  success: boolean
+  error?: string
+}
+
+export interface CronSkillRemoveResultMessage {
+  type: 'cron.skill.remove.result'
+  success: boolean
+  error?: string
+}
+
+export interface CronSkillListResultMessage {
+  type: 'cron.skill.list.result'
+  skills: CronSkillRecord[]
+}
+
 export type NodeToUIMessage =
   | AgentEventMessage
   | AgentCompletedMessage
@@ -203,3 +438,25 @@ export type NodeToUIMessage =
   | SessionClearResultMessage
   | ToolPreExecuteMessage
   | ToolPreExecuteExpiredMessage
+  | HeartbeatStartedMessage
+  | HeartbeatCompletedMessage
+  | HeartbeatSkippedMessage
+  | CronJobStartedMessage
+  | CronJobCompletedMessage
+  | CronJobErrorMessage
+  | CronNotificationMessage
+  | SchedulerStatusMessage
+  | SchedulerOverdueMessage
+  | HeartbeatSetResultMessage
+  | SchedulerSetResultMessage
+  | SchedulerGetResultMessage
+  | CronJobAddResultMessage
+  | CronJobUpdateResultMessage
+  | CronJobRemoveResultMessage
+  | CronJobListResultMessage
+  | CronJobRunResultMessage
+  | CronRunsListResultMessage
+  | CronSkillAddResultMessage
+  | CronSkillUpdateResultMessage
+  | CronSkillRemoveResultMessage
+  | CronSkillListResultMessage

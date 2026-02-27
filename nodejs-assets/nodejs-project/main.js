@@ -82,12 +82,18 @@ import {
   initWorkerDb, isDbReady,
   run as dbRun, query as dbQuery, queryOne as dbQueryOne,
   transaction as dbTransaction, flush as dbFlush,
+  getSchedulerConfig, setSchedulerConfig,
+  getHeartbeatConfig, setHeartbeatConfig,
+  addCronSkill, updateCronSkill, removeCronSkill, listCronSkills,
+  addCronJob, updateCronJob, removeCronJob, listCronJobs,
+  listCronRuns,
   migrateFromJsonl, atomicWrite,
 } from './worker-db.js';
 
 // ── MCP bridge (device tools from WebView) ────────────────────────────────
 import { initMcpBridge } from './mcp-bridge-client.js';
 import { buildMcpAgentTools } from './mcp-agent-tools.js';
+import { initHeartbeat, handleHeartbeatWake } from './worker-heartbeat.js';
 
 const mcpBridge = initMcpBridge(channel);
 console.error(`[DEBUG] MCP bridge initialized`);
@@ -122,10 +128,7 @@ async function discoverMcpTools() {
 
       // Only cache if the epoch hasn't changed (no invalidation while discovering)
       if (epoch === discoveryEpoch) {
-        cachedMcpTools = rawTools.map(tool => ({
-          ...tool,
-          execute: wrapWithPreExecuteHook(tool.name, tool.execute),
-        }));
+        cachedMcpTools = rawTools;
         console.log(`[mobile-claw] Discovered ${cachedMcpTools.length} MCP device tools`);
       }
 
@@ -910,6 +913,23 @@ let currentAgent = null;
 let currentAbortController = null;
 let currentSessionKey = null;
 let persistedMessageCount = 0;  // Tracks how many messages have been written to JSONL
+let userTurnActive = false;
+
+function setUserTurnActive(active) {
+  userTurnActive = !!active;
+}
+
+function isUserTurnActive() {
+  return userTurnActive;
+}
+
+function getCurrentAgent() {
+  return currentAgent;
+}
+
+function getCurrentSessionKey() {
+  return currentSessionKey;
+}
 
 // Idempotency: track recent message keys to silently drop duplicates
 const recentIdempotencyKeys = new Set();
@@ -1109,11 +1129,21 @@ function buildAgentTools() {
     },
   ];
 
-  // Wrap all tools with pre-execute hook (consumer decides approval policy)
+  return toolDefs;
+}
+
+function wrapToolsWithPreExecuteHook(toolDefs) {
   return toolDefs.map(tool => ({
     ...tool,
     execute: wrapWithPreExecuteHook(tool.name, tool.execute),
   }));
+}
+
+function buildAutoApproveTools(allowedToolNames = null) {
+  const raw = buildAgentTools();
+  return allowedToolNames
+    ? raw.filter(tool => allowedToolNames.includes(tool.name))
+    : raw;
 }
 
 // ── AgentEvent → Bridge event mapping ────────────────────────────────────
@@ -1390,6 +1420,11 @@ function _checkpointMessages(agent, agentId, sessionKey) {
   }
 }
 
+function persistCurrentSession(startTime = Date.now(), agentId = 'main', sessionKey = currentSessionKey) {
+  if (!currentAgent || !sessionKey) return;
+  saveSession(currentAgent, agentId, sessionKey, startTime);
+}
+
 // ── Error classification ─────────────────────────────────────────────────
 
 function isTransientError(err) {
@@ -1596,7 +1631,11 @@ async function runSkill(agentId, locale = 'en', injectedConfig = null) {
   const setupNames = new Set(setupTools.map(t => t.name));
   const filteredBase = baseTools.filter(t => !setupNames.has(t.name));
   const filteredMcp = mcpTools.filter(t => !setupNames.has(t.name));
-  const tools = [...setupTools, ...filteredBase, ...filteredMcp];
+  const tools = [
+    ...setupTools,
+    ...wrapToolsWithPreExecuteHook(filteredBase),
+    ...wrapToolsWithPreExecuteHook(filteredMcp),
+  ];
 
   const skillId = injectedConfig?.id || 'setup';
   const sessionKey = `${skillId}/${Date.now()}`;
@@ -1751,9 +1790,9 @@ async function runAgentLoop(agentId, sessionKey, prompt, requestedModel) {
   console.error(`[DEBUG] Model resolved: ${JSON.stringify({id: model?.id, provider: model?.provider, api: model?.api}).slice(0,200)}`);
 
   // Merge local tools with MCP device tools (if bridge is available)
-  const localTools = buildAgentTools();
+  const localTools = wrapToolsWithPreExecuteHook(buildAgentTools());
   console.error(`[DEBUG] Local tools: ${localTools.length}`);
-  const mcpTools = await discoverMcpTools();
+  const mcpTools = wrapToolsWithPreExecuteHook(await discoverMcpTools());
   console.error(`[DEBUG] MCP tools: ${mcpTools.length}`);
   const tools = [...localTools, ...mcpTools];
   console.error(`[DEBUG] Total tools: ${tools.length}`);
@@ -1786,6 +1825,7 @@ async function runAgentLoop(agentId, sessionKey, prompt, requestedModel) {
   // Run
   const startTime = Date.now();
   console.error(`[DEBUG] Calling agent.prompt()...`);
+  setUserTurnActive(true);
   try {
     await agent.prompt(prompt);
     console.error(`[DEBUG] agent.prompt() resolved, calling waitForIdle()...`);
@@ -1827,6 +1867,8 @@ async function runAgentLoop(agentId, sessionKey, prompt, requestedModel) {
       lastFailedPrompt = null;
     }
     currentAbortController = null;
+  } finally {
+    setUserTurnActive(false);
   }
 }
 
@@ -1874,6 +1916,7 @@ channel.addListener('message', async (event) => {
         const startTime = Date.now();
         const agentId = msg.agentId || 'main';
         const sessionKey = currentSessionKey || msg.sessionKey;
+        setUserTurnActive(true);
         try {
           await currentAgent.prompt(msg.prompt);
           await currentAgent.waitForIdle();
@@ -1903,6 +1946,8 @@ channel.addListener('message', async (event) => {
             currentSessionKey = null;
             lastFailedPrompt = null;
           }
+        } finally {
+          setUserTurnActive(false);
         }
       } else {
         // New conversation
@@ -1938,6 +1983,7 @@ channel.addListener('message', async (event) => {
       const retryAgentId = msg.agentId || 'main';
       const retrySessionKey = currentSessionKey || msg.sessionKey;
       const retryStart = Date.now();
+      setUserTurnActive(true);
       try {
         await currentAgent.prompt(retryPrompt);
         await currentAgent.waitForIdle();
@@ -1965,6 +2011,8 @@ channel.addListener('message', async (event) => {
           currentSessionKey = null;
           lastFailedPrompt = null;
         }
+      } finally {
+        setUserTurnActive(false);
       }
       break;
     }
@@ -2043,8 +2091,8 @@ channel.addListener('message', async (event) => {
       // If an agent is running, re-discover and inject the updated tool set
       if (currentAgent) {
         try {
-          const localTools = buildAgentTools();
-          const mcpTools = await discoverMcpTools();
+          const localTools = wrapToolsWithPreExecuteHook(buildAgentTools());
+          const mcpTools = wrapToolsWithPreExecuteHook(await discoverMcpTools());
           const tools = [...localTools, ...mcpTools];
           currentAgent.setTools(tools);
           console.log(`[mobile-claw] Tools invalidated and refreshed: ${tools.length} total (${mcpTools.length} MCP)`);
@@ -2132,6 +2180,142 @@ channel.addListener('message', async (event) => {
         { id: 'claude-opus-4', name: 'Claude Opus 4', description: 'Most capable' },
       ];
       channel.send('message', { type: 'config.models.result', models });
+      break;
+    }
+
+    case 'heartbeat.wake': {
+      await handleHeartbeatWake(msg.source || 'manual');
+      break;
+    }
+
+    case 'heartbeat.set': {
+      try {
+        const heartbeat = setHeartbeatConfig(msg.config || {});
+        channel.send('message', {
+          type: 'heartbeat.set.result',
+          success: true,
+          heartbeat,
+        });
+      } catch (err) {
+        channel.send('message', {
+          type: 'heartbeat.set.result',
+          success: false,
+          error: err.message,
+        });
+      }
+      break;
+    }
+
+    case 'scheduler.set': {
+      try {
+        const scheduler = setSchedulerConfig(msg.config || {});
+        channel.send('message', {
+          type: 'scheduler.set.result',
+          success: true,
+          scheduler,
+        });
+      } catch (err) {
+        channel.send('message', {
+          type: 'scheduler.set.result',
+          success: false,
+          error: err.message,
+        });
+      }
+      break;
+    }
+
+    case 'scheduler.get': {
+      const scheduler = getSchedulerConfig();
+      const heartbeat = getHeartbeatConfig();
+      channel.send('message', {
+        type: 'scheduler.get.result',
+        scheduler,
+        heartbeat,
+      });
+      break;
+    }
+
+    case 'cron.job.add': {
+      try {
+        const job = addCronJob(msg.job || {});
+        channel.send('message', { type: 'cron.job.add.result', success: true, job });
+      } catch (err) {
+        channel.send('message', { type: 'cron.job.add.result', success: false, error: err.message });
+      }
+      break;
+    }
+
+    case 'cron.job.update': {
+      try {
+        updateCronJob(msg.id, msg.patch || {});
+        channel.send('message', { type: 'cron.job.update.result', success: true });
+      } catch (err) {
+        channel.send('message', { type: 'cron.job.update.result', success: false, error: err.message });
+      }
+      break;
+    }
+
+    case 'cron.job.remove': {
+      try {
+        removeCronJob(msg.id);
+        channel.send('message', { type: 'cron.job.remove.result', success: true });
+      } catch (err) {
+        channel.send('message', { type: 'cron.job.remove.result', success: false, error: err.message });
+      }
+      break;
+    }
+
+    case 'cron.job.list': {
+      const jobs = listCronJobs();
+      channel.send('message', { type: 'cron.job.list.result', jobs });
+      break;
+    }
+
+    case 'cron.job.run': {
+      await handleHeartbeatWake('manual', { force: true, forceJobId: msg.id });
+      channel.send('message', { type: 'cron.job.run.result', success: true, id: msg.id });
+      break;
+    }
+
+    case 'cron.runs.list': {
+      const runs = listCronRuns(msg.jobId, msg.limit);
+      channel.send('message', { type: 'cron.runs.list.result', runs });
+      break;
+    }
+
+    case 'cron.skill.add': {
+      try {
+        const skill = addCronSkill(msg.skill || {});
+        channel.send('message', { type: 'cron.skill.add.result', success: true, skill });
+      } catch (err) {
+        channel.send('message', { type: 'cron.skill.add.result', success: false, error: err.message });
+      }
+      break;
+    }
+
+    case 'cron.skill.update': {
+      try {
+        updateCronSkill(msg.id, msg.patch || {});
+        channel.send('message', { type: 'cron.skill.update.result', success: true });
+      } catch (err) {
+        channel.send('message', { type: 'cron.skill.update.result', success: false, error: err.message });
+      }
+      break;
+    }
+
+    case 'cron.skill.remove': {
+      try {
+        removeCronSkill(msg.id);
+        channel.send('message', { type: 'cron.skill.remove.result', success: true });
+      } catch (err) {
+        channel.send('message', { type: 'cron.skill.remove.result', success: false, error: err.message });
+      }
+      break;
+    }
+
+    case 'cron.skill.list': {
+      const skills = listCronSkills();
+      channel.send('message', { type: 'cron.skill.list.result', skills });
       break;
     }
 
@@ -2346,8 +2530,8 @@ channel.addListener('message', async (event) => {
         const systemPrompt = loadSystemPrompt();
         const model = getModel('anthropic', 'claude-sonnet-4-5');
 
-        const localTools = buildAgentTools();
-        const mcpTools = await discoverMcpTools();
+        const localTools = wrapToolsWithPreExecuteHook(buildAgentTools());
+        const mcpTools = wrapToolsWithPreExecuteHook(await discoverMcpTools());
         const tools = [...localTools, ...mcpTools];
 
         const agent = new Agent({
@@ -2450,6 +2634,23 @@ initWorkerDb(OPENCLAW_ROOT).then(() => {
       mcpToolCount: 0,
     });
     console.error(`[DEBUG] worker.ready SENT. Node=${process.version} root=${OPENCLAW_ROOT}`);
+
+    initHeartbeat({
+      channel,
+      buildAutoApproveTools,
+      discoverMcpTools,
+      getCurrentAgent,
+      getCurrentSessionKey,
+      isUserTurnActive,
+      resolveApiKey,
+      loadAuthProfiles,
+      loadSystemPrompt,
+      getModel,
+      refreshOAuthTokenIfNeeded,
+      Agent,
+      OPENCLAW_ROOT,
+      persistCurrentSession,
+    });
 
     // Pre-discover MCP device tools at startup (non-blocking, best-effort).
     channel.send('message', { type: 'worker.loading_phase', phase: 'tools' });

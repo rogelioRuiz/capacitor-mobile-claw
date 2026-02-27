@@ -3,6 +3,7 @@
     class="h-full overflow-y-auto"
     style="padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px)"
   >
+    <OverdueToast :count="overdueJobs.length" />
     <div class="max-w-lg mx-auto px-4 pt-16 pb-12 md:pt-6">
 
       <!-- Header -->
@@ -286,6 +287,183 @@
         </SettingsRow>
       </SettingsGroup>
 
+      <!-- Scheduled Tasks -->
+      <SettingsGroup label="SCHEDULED TASKS">
+        <SettingsRow
+          label="Enabled"
+          subtitle="Enable the scheduler for heartbeat and cron jobs"
+          icon-color="bg-indigo-500/15 text-indigo-300"
+        >
+          <template #right>
+            <button
+              class="w-10 h-6 rounded-full relative transition-colors duration-200"
+              :class="schedulerConfig?.enabled ? 'bg-primary' : 'bg-muted-foreground/30'"
+              @click="toggleSchedulerEnabled"
+            >
+              <span
+                class="absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200"
+                :class="schedulerConfig?.enabled ? 'translate-x-[18px]' : 'translate-x-0.5'"
+              />
+            </button>
+          </template>
+        </SettingsRow>
+
+        <SettingsRow
+          label="Scheduling Mode"
+          :subtitle="(schedulerConfig?.schedulingMode || 'balanced').toUpperCase()"
+          :clickable="true"
+          @click="setSchedulingMode(schedulerConfig?.schedulingMode === 'eco' ? 'balanced' : schedulerConfig?.schedulingMode === 'balanced' ? 'aggressive' : 'eco')"
+        />
+
+        <SettingsRow
+          label="Global Active Hours"
+          :subtitle="schedulerConfig?.globalActiveHours ? `${schedulerConfig.globalActiveHours.start}-${schedulerConfig.globalActiveHours.end} (${schedulerConfig.globalActiveHours.tz || 'UTC'})` : 'Always active'"
+          :clickable="true"
+          :show-chevron="true"
+          @click="openActiveHoursDialog('global', schedulerConfig?.globalActiveHours)"
+        />
+
+        <SettingsRow
+          label="Run When Charging"
+          subtitle="Prefer charging windows for heavy wakeups"
+        >
+          <template #right>
+            <button
+              class="w-10 h-6 rounded-full relative transition-colors duration-200"
+              :class="schedulerConfig?.runOnCharging ? 'bg-primary' : 'bg-muted-foreground/30'"
+              @click="toggleRunOnCharging"
+            >
+              <span
+                class="absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200"
+                :class="schedulerConfig?.runOnCharging ? 'translate-x-[18px]' : 'translate-x-0.5'"
+              />
+            </button>
+          </template>
+        </SettingsRow>
+
+        <IosOnboardingBanner
+          :show="showIosOnboarding"
+          :enabled-at="Number(localStorage.getItem('sentinel-enabled-at') || 0)"
+          @dismiss="dismissIosOnboarding"
+        />
+
+        <div class="px-4 py-2 border-t border-border/20 text-[0.72rem] text-muted-foreground/70">
+          Platform Status: {{ /iPad|iPhone|iPod/.test(navigator.userAgent) ? 'iOS BGRefresh registered' : 'Android WorkManager active' }}
+        </div>
+      </SettingsGroup>
+
+      <!-- Heartbeat -->
+      <SettingsGroup label="HEARTBEAT">
+        <SettingsRow label="Enabled" subtitle="Run periodic sentinel checks">
+          <template #right>
+            <button
+              class="w-10 h-6 rounded-full relative transition-colors duration-200"
+              :class="heartbeatConfig?.enabled ? 'bg-primary' : 'bg-muted-foreground/30'"
+              @click="toggleHeartbeatEnabled"
+            >
+              <span
+                class="absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200"
+                :class="heartbeatConfig?.enabled ? 'translate-x-[18px]' : 'translate-x-0.5'"
+              />
+            </button>
+          </template>
+        </SettingsRow>
+
+        <SettingsRow
+          label="Check Every"
+          :subtitle="`${Math.round((heartbeatConfig?.everyMs || 1800000) / 60000)} minutes`"
+          :clickable="true"
+          :show-chevron="true"
+          @click="setHeartbeatEvery(heartbeatIntervals.find((o) => o.value > (heartbeatConfig?.everyMs || 1800000))?.value || heartbeatIntervals[0].value)"
+        />
+
+        <SettingsRow
+          label="Skill"
+          :subtitle="cronSkills.find((s) => s.id === heartbeatConfig?.skillId)?.name || 'Default heartbeat skill'"
+          :clickable="true"
+          :show-chevron="true"
+          @click="setHeartbeatSkill(cronSkills[0]?.id || '')"
+        />
+
+        <SettingsRow
+          label="Active Hours"
+          :subtitle="heartbeatConfig?.activeHours ? `${heartbeatConfig.activeHours.start}-${heartbeatConfig.activeHours.end} (${heartbeatConfig.activeHours.tz || 'UTC'})` : 'Always active'"
+          :clickable="true"
+          :show-chevron="true"
+          @click="openActiveHoursDialog('heartbeat', heartbeatConfig?.activeHours)"
+        />
+
+        <SettingsRow
+          label="Edit HEARTBEAT.md"
+          subtitle="Switches to HEARTBEAT.md in the workspace editor"
+          :clickable="true"
+          :show-chevron="true"
+          @click="selectFile({ name: 'HEARTBEAT.md' })"
+        />
+
+        <SettingsRow
+          label="Trigger Now"
+          :subtitle="heartbeatStatusLine"
+          :clickable="true"
+          :show-chevron="true"
+          @click="triggerHeartbeat"
+        />
+      </SettingsGroup>
+
+      <!-- Cron Jobs -->
+      <SettingsGroup label="CRON JOBS">
+        <SettingsRow
+          v-for="job in cronJobs"
+          :key="job.id"
+          :label="job.name"
+          :subtitle="formatJobSubtitle(job)"
+          :clickable="true"
+          :show-chevron="true"
+          @click="openJobDialog(job)"
+        >
+          <template #right>
+            <button
+              class="w-10 h-6 rounded-full relative transition-colors duration-200"
+              :class="job.enabled ? 'bg-primary' : 'bg-muted-foreground/30'"
+              @click.stop="updateJob(job.id, { enabled: !job.enabled })"
+            >
+              <span
+                class="absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform duration-200"
+                :class="job.enabled ? 'translate-x-[18px]' : 'translate-x-0.5'"
+              />
+            </button>
+          </template>
+        </SettingsRow>
+
+        <SettingsRow
+          label="Add Cron Job"
+          subtitle="Create a scheduled job with isolated or main-session execution"
+          :clickable="true"
+          :show-chevron="true"
+          @click="openJobDialog()"
+        />
+      </SettingsGroup>
+
+      <!-- Skills -->
+      <SettingsGroup label="SKILLS">
+        <SettingsRow
+          v-for="skill in cronSkills"
+          :key="skill.id"
+          :label="skill.name"
+          :subtitle="`${(skill.allowedTools || []).length || 'all'} tools · max ${skill.maxTurns || 3} turns · ${skill.model || 'default'}`"
+          :clickable="true"
+          :show-chevron="true"
+          @click="openSkillDialog(skill)"
+        />
+        <SettingsRow
+          label="Add Skill"
+          subtitle="Create a constrained skill for heartbeat/cron"
+          :clickable="true"
+          :show-chevron="true"
+          @click="openSkillDialog()"
+        />
+      </SettingsGroup>
+
       <!-- Session History -->
       <SettingsGroup label="SESSIONS">
         <SettingsRow
@@ -452,6 +630,187 @@
         </div>
       </div>
     </Teleport>
+
+    <!-- Active Hours Dialog -->
+    <Teleport to="body">
+      <div v-if="showActiveHoursDialog" class="fixed inset-0 z-50 flex items-center justify-center p-4">
+        <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" @click="showActiveHoursDialog = false" />
+        <div class="relative bg-card border border-border/50 rounded-2xl shadow-2xl w-full max-w-sm p-5 space-y-4">
+          <h3 class="text-base font-semibold text-foreground">Active Hours</h3>
+          <div class="space-y-2">
+            <label class="text-xs text-muted-foreground">Start</label>
+            <input v-model="activeHoursModel.start" type="time" class="w-full px-3 py-2 rounded-lg bg-secondary border border-border/50 text-sm" />
+          </div>
+          <div class="space-y-2">
+            <label class="text-xs text-muted-foreground">End</label>
+            <input v-model="activeHoursModel.end" type="time" class="w-full px-3 py-2 rounded-lg bg-secondary border border-border/50 text-sm" />
+          </div>
+          <div class="space-y-2">
+            <label class="text-xs text-muted-foreground">Timezone</label>
+            <input v-model="activeHoursModel.tz" type="text" class="w-full px-3 py-2 rounded-lg bg-secondary border border-border/50 text-sm" />
+          </div>
+          <div class="flex gap-2 justify-end">
+            <button class="px-3 py-2 rounded-lg text-xs border border-border/50" @click="clearActiveHoursDialog">Clear</button>
+            <button class="px-3 py-2 rounded-lg text-xs border border-border/50" @click="showActiveHoursDialog = false">Cancel</button>
+            <button class="px-3 py-2 rounded-lg text-xs bg-primary text-primary-foreground" @click="saveActiveHoursDialog">Save</button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- Job Dialog -->
+    <Teleport to="body">
+      <div v-if="showJobDialog" class="fixed inset-0 z-50 flex items-center justify-center p-4">
+        <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" @click="showJobDialog = false" />
+        <div class="relative bg-card border border-border/50 rounded-2xl shadow-2xl w-full max-w-lg max-h-[80vh] overflow-y-auto p-5 space-y-3">
+          <h3 class="text-base font-semibold text-foreground">{{ editingJobId ? 'Edit Cron Job' : 'New Cron Job' }}</h3>
+          <input v-model="jobDraft.name" placeholder="Job name" class="w-full px-3 py-2 rounded-lg bg-secondary border border-border/50 text-sm" />
+
+          <div class="grid grid-cols-2 gap-2">
+            <select v-model="jobDraft.schedule.kind" class="px-3 py-2 rounded-lg bg-secondary border border-border/50 text-sm">
+              <option value="every">Every</option>
+              <option value="at">At</option>
+            </select>
+            <input
+              v-if="jobDraft.schedule.kind === 'every'"
+              v-model.number="jobDraft.schedule.everyMs"
+              type="number"
+              min="60000"
+              step="60000"
+              placeholder="Every ms"
+              class="px-3 py-2 rounded-lg bg-secondary border border-border/50 text-sm"
+            />
+            <input
+              v-else
+              v-model.number="jobDraft.schedule.atMs"
+              type="number"
+              placeholder="Unix ms"
+              class="px-3 py-2 rounded-lg bg-secondary border border-border/50 text-sm"
+            />
+          </div>
+
+          <select v-model="jobDraft.skillId" class="w-full px-3 py-2 rounded-lg bg-secondary border border-border/50 text-sm">
+            <option disabled value="">Select skill</option>
+            <option v-for="skill in cronSkills" :key="skill.id" :value="skill.id">{{ skill.name }}</option>
+          </select>
+
+          <textarea v-model="jobDraft.prompt" rows="4" placeholder="Prompt" class="w-full px-3 py-2 rounded-lg bg-secondary border border-border/50 text-sm" />
+
+          <div class="grid grid-cols-3 gap-2">
+            <select v-model="jobDraft.deliveryMode" class="px-3 py-2 rounded-lg bg-secondary border border-border/50 text-sm">
+              <option value="notification">Notification</option>
+              <option value="webhook">Webhook</option>
+              <option value="none">None</option>
+            </select>
+            <select v-model="jobDraft.sessionTarget" class="px-3 py-2 rounded-lg bg-secondary border border-border/50 text-sm">
+              <option value="isolated">Isolated</option>
+              <option value="main">Main Session</option>
+            </select>
+            <select v-model="jobDraft.wakeMode" class="px-3 py-2 rounded-lg bg-secondary border border-border/50 text-sm">
+              <option value="next-heartbeat">Next heartbeat</option>
+              <option value="now">Now</option>
+            </select>
+          </div>
+
+          <input
+            v-if="jobDraft.deliveryMode === 'webhook'"
+            v-model="jobDraft.deliveryWebhookUrl"
+            placeholder="Webhook URL"
+            class="w-full px-3 py-2 rounded-lg bg-secondary border border-border/50 text-sm"
+          />
+
+          <button
+            class="w-full px-3 py-2 rounded-lg text-xs border border-border/50 text-left"
+            @click="activeHoursTarget = 'job'; openActiveHoursDialog(jobDraft.activeHours)"
+          >
+            {{ jobDraft.activeHours ? `Active: ${jobDraft.activeHours.start}–${jobDraft.activeHours.end}` : 'Set Active Hours' }}
+          </button>
+
+          <div class="flex justify-between gap-2 pt-2">
+            <button v-if="editingJobId" class="px-3 py-2 rounded-lg text-xs border border-red-500/40 text-red-400" @click="deleteJobFromDialog">Delete</button>
+            <button v-if="editingJobId" class="px-3 py-2 rounded-lg text-xs border border-border/50" @click="openRunHistoryDialog({ id: editingJobId, name: jobDraft.name })">Run History</button>
+            <button v-if="editingJobId" class="px-3 py-2 rounded-lg text-xs border border-blue-500/40 text-blue-400" @click="runJobNow(editingJobId); showJobDialog = false">Run Now</button>
+            <div class="ml-auto flex gap-2">
+              <button class="px-3 py-2 rounded-lg text-xs border border-border/50" @click="showJobDialog = false">Cancel</button>
+              <button class="px-3 py-2 rounded-lg text-xs bg-primary text-primary-foreground" @click="saveJobDialog">Save</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- Skill Dialog -->
+    <Teleport to="body">
+      <div v-if="showSkillDialog" class="fixed inset-0 z-50 flex items-center justify-center p-4">
+        <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" @click="showSkillDialog = false" />
+        <div class="relative bg-card border border-border/50 rounded-2xl shadow-2xl w-full max-w-lg max-h-[80vh] overflow-y-auto p-5 space-y-3">
+          <h3 class="text-base font-semibold text-foreground">{{ editingSkillId ? 'Edit Skill' : 'New Skill' }}</h3>
+          <input v-model="skillDraft.name" placeholder="Skill name" class="w-full px-3 py-2 rounded-lg bg-secondary border border-border/50 text-sm" />
+          <textarea v-model="skillDraft.systemPrompt" rows="4" placeholder="System prompt" class="w-full px-3 py-2 rounded-lg bg-secondary border border-border/50 text-sm" />
+          <div class="grid grid-cols-3 gap-2">
+            <div>
+              <label class="text-xs text-muted-foreground mb-1 block">Model</label>
+              <input v-model="skillDraft.model" placeholder="Default" class="w-full px-3 py-2 rounded-lg bg-secondary border border-border/50 text-sm" />
+            </div>
+            <div>
+              <label class="text-xs text-muted-foreground mb-1 block">Max Turns</label>
+              <input v-model.number="skillDraft.maxTurns" type="number" min="1" class="w-full px-3 py-2 rounded-lg bg-secondary border border-border/50 text-sm" />
+            </div>
+            <div>
+              <label class="text-xs text-muted-foreground mb-1 block">Timeout (ms)</label>
+              <input v-model.number="skillDraft.timeoutMs" type="number" min="1000" step="1000" class="w-full px-3 py-2 rounded-lg bg-secondary border border-border/50 text-sm" />
+            </div>
+          </div>
+          <div>
+            <div class="text-xs text-muted-foreground mb-2">Allowed tools (empty = all)</div>
+            <div class="grid grid-cols-2 gap-2">
+              <label v-for="tool in availableToolNames" :key="tool" class="text-xs flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  :checked="skillDraft.allowedTools.includes(tool)"
+                  @change="(e) => {
+                    if (e.target.checked) skillDraft.allowedTools = [...skillDraft.allowedTools, tool]
+                    else skillDraft.allowedTools = skillDraft.allowedTools.filter((t) => t !== tool)
+                  }"
+                />
+                <span>{{ tool }}</span>
+              </label>
+            </div>
+          </div>
+          <div class="flex justify-end gap-2 pt-2">
+            <button v-if="editingSkillId" class="px-3 py-2 rounded-lg text-xs border border-red-500/40 text-red-400 mr-auto" @click="deleteSkillFromDialog">Delete</button>
+            <button class="px-3 py-2 rounded-lg text-xs border border-border/50" @click="showSkillDialog = false">Cancel</button>
+            <button class="px-3 py-2 rounded-lg text-xs bg-primary text-primary-foreground" @click="saveSkillDialog">Save</button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- Run History Dialog -->
+    <Teleport to="body">
+      <div v-if="showRunHistoryDialog" class="fixed inset-0 z-50 flex items-center justify-center p-4">
+        <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" @click="showRunHistoryDialog = false" />
+        <div class="relative bg-card border border-border/50 rounded-2xl shadow-2xl w-full max-w-lg max-h-[70vh] overflow-y-auto p-5">
+          <h3 class="text-base font-semibold text-foreground mb-4">Run History · {{ runHistoryJobName }}</h3>
+          <div v-if="runHistory.length === 0" class="py-6 text-sm text-muted-foreground text-center">No runs yet</div>
+          <div v-else class="space-y-2">
+            <div v-for="run in runHistory" :key="run.id" class="border border-border/40 rounded-lg px-3 py-2">
+              <div class="flex items-center justify-between text-xs">
+                <span>{{ new Date(run.startedAt).toLocaleString() }}</span>
+                <span
+                  class="px-2 py-0.5 rounded-full"
+                  :class="run.status === 'ok' ? 'bg-emerald-500/20 text-emerald-300' : run.status === 'error' ? 'bg-red-500/20 text-red-300' : run.status === 'deduped' ? 'bg-amber-500/20 text-amber-300' : 'bg-muted/40 text-muted-foreground'"
+                >
+                  {{ run.status }}
+                </span>
+              </div>
+              <div v-if="run.error" class="text-xs text-red-300 mt-1">{{ run.error }}</div>
+              <div v-else-if="run.responseText" class="text-xs text-muted-foreground mt-1">{{ run.responseText }}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -460,8 +819,11 @@ import { ref, computed, watch, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { useMobileClaw } from '@/composables/useMobileClaw'
 import { useMemory } from '@/composables/useMemory'
+import { useHeartbeat } from '@/composables/useHeartbeat'
 import SettingsGroup from '@/components/settings/SettingsGroup.vue'
 import SettingsRow from '@/components/settings/SettingsRow.vue'
+import IosOnboardingBanner from '@/components/IosOnboardingBanner.vue'
+import OverdueToast from '@/components/OverdueToast.vue'
 
 const router = useRouter()
 const {
@@ -475,6 +837,29 @@ const {
   memoryCount, indexing, initialized: memoryInitialized,
   updateMemoryConfig, clearMemories, reindex, loadSavedConfig, refreshCount,
 } = useMemory()
+
+const {
+  schedulerConfig,
+  heartbeatConfig,
+  cronJobs,
+  cronSkills,
+  runHistory,
+  overdueJobs,
+  lastHeartbeatResult,
+  showIosOnboarding,
+  setScheduler,
+  setHeartbeat,
+  addJob,
+  updateJob,
+  removeJob,
+  addSkill,
+  updateSkill,
+  removeSkill,
+  loadRunHistory,
+  triggerHeartbeat,
+  dismissIosOnboarding,
+  init: initHeartbeat,
+} = useHeartbeat()
 
 // ── Navigation ───────────────────────────────────────────────────────────────
 
@@ -521,6 +906,7 @@ const files = [
   { name: 'SOUL.md', label: 'SOUL.md' },
   { name: 'MEMORY.md', label: 'MEMORY.md' },
   { name: 'IDENTITY.md', label: 'IDENTITY.md' },
+  { name: 'HEARTBEAT.md', label: 'HEARTBEAT.md' },
 ]
 
 const activeFile = ref('SOUL.md')
@@ -698,10 +1084,238 @@ async function confirmClearMemories() {
   }
 }
 
+// ── Scheduler / Heartbeat / Cron / Skills ──────────────────────────────────
+
+const heartbeatIntervals = [
+  { label: '15m', value: 15 * 60 * 1000 },
+  { label: '30m', value: 30 * 60 * 1000 },
+  { label: '1h', value: 60 * 60 * 1000 },
+  { label: '2h', value: 2 * 60 * 60 * 1000 },
+  { label: '4h', value: 4 * 60 * 60 * 1000 },
+]
+
+const heartbeatStatusLine = computed(() => {
+  const last = lastHeartbeatResult.value
+  const next = heartbeatConfig.value?.nextRunAt
+  const nextText = next ? new Date(next).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : 'n/a'
+  if (!last) return `Last: n/a · Next: ${nextText}`
+  const reason = last.reason || last.status || 'ok'
+  const dur = typeof last.durationMs === 'number' ? `${(last.durationMs / 1000).toFixed(1)}s` : '--'
+  return `Last: ${reason} (${dur}) · Next: ${nextText}`
+})
+
+function formatJobSubtitle(job) {
+  const skill = cronSkills.value.find((s) => s.id === job.skillId)
+  const schedule = job?.schedule?.kind === 'every'
+    ? `Every ${Math.round((job.schedule.everyMs || 0) / 60000)}m`
+    : `At ${new Date(job.schedule?.atMs || Date.now()).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`
+  const status = job.lastRunStatus || 'never ran'
+  return `${schedule} · skill: ${skill?.name || 'unknown'} · ${status}`
+}
+
+const showActiveHoursDialog = ref(false)
+const activeHoursTarget = ref('global')
+const activeHoursModel = ref({ start: '', end: '', tz: 'UTC' })
+
+function openActiveHoursDialog(target, current) {
+  activeHoursTarget.value = target
+  activeHoursModel.value = {
+    start: current?.start || '',
+    end: current?.end || '',
+    tz: current?.tz || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+  }
+  showActiveHoursDialog.value = true
+}
+
+async function saveActiveHoursDialog() {
+  const patch = activeHoursModel.value.start && activeHoursModel.value.end
+    ? {
+        start: activeHoursModel.value.start,
+        end: activeHoursModel.value.end,
+        tz: activeHoursModel.value.tz,
+      }
+    : null
+
+  if (activeHoursTarget.value === 'global') {
+    await setScheduler(
+      patch
+        ? { globalActiveHours: patch }
+        : {
+            global_active_hours_start: null,
+            global_active_hours_end: null,
+            global_active_hours_tz: null,
+          },
+    )
+  } else if (activeHoursTarget.value === 'heartbeat') {
+    await setHeartbeat(
+      patch
+        ? { activeHours: patch }
+        : { active_hours_start: null, active_hours_end: null, active_hours_tz: null },
+    )
+  } else if (activeHoursTarget.value === 'job') {
+    jobDraft.value.activeHours = patch || undefined
+  }
+  showActiveHoursDialog.value = false
+}
+
+async function clearActiveHoursDialog() {
+  activeHoursModel.value = { start: '', end: '', tz: activeHoursModel.value.tz || 'UTC' }
+  await saveActiveHoursDialog()
+}
+
+async function toggleSchedulerEnabled() {
+  await setScheduler({ enabled: !schedulerConfig.value?.enabled })
+}
+
+async function setSchedulingMode(mode) {
+  await setScheduler({ schedulingMode: mode })
+}
+
+async function toggleRunOnCharging() {
+  await setScheduler({ runOnCharging: !schedulerConfig.value?.runOnCharging })
+}
+
+async function toggleHeartbeatEnabled() {
+  await setHeartbeat({ enabled: !heartbeatConfig.value?.enabled })
+}
+
+async function setHeartbeatEvery(ms) {
+  await setHeartbeat({ everyMs: ms })
+}
+
+async function setHeartbeatSkill(skillId) {
+  await setHeartbeat({ skillId: skillId || undefined })
+}
+
+const showJobDialog = ref(false)
+const editingJobId = ref(null)
+const showRunHistoryDialog = ref(false)
+const runHistoryJobName = ref('')
+
+function createDefaultJobDraft() {
+  return {
+    name: '',
+    enabled: true,
+    sessionTarget: 'isolated',
+    wakeMode: 'next-heartbeat',
+    schedule: { kind: 'every', everyMs: 60 * 60 * 1000 },
+    skillId: '',
+    prompt: '',
+    deliveryMode: 'notification',
+    deliveryWebhookUrl: '',
+    deliveryNotificationTitle: '',
+    activeHours: undefined,
+  }
+}
+
+const jobDraft = ref(createDefaultJobDraft())
+
+function openJobDialog(job = null) {
+  editingJobId.value = job?.id || null
+  jobDraft.value = job
+    ? {
+        name: job.name,
+        enabled: job.enabled !== false,
+        sessionTarget: job.sessionTarget || 'isolated',
+        wakeMode: job.wakeMode || 'next-heartbeat',
+        schedule: { ...job.schedule },
+        skillId: job.skillId,
+        prompt: job.prompt,
+        deliveryMode: job.deliveryMode || 'notification',
+        deliveryWebhookUrl: job.deliveryWebhookUrl || '',
+        deliveryNotificationTitle: job.deliveryNotificationTitle || '',
+        activeHours: job.activeHours,
+      }
+    : createDefaultJobDraft()
+  showJobDialog.value = true
+}
+
+async function saveJobDialog() {
+  if (!jobDraft.value.name.trim() || !jobDraft.value.skillId || !jobDraft.value.prompt.trim()) return
+  if (editingJobId.value) {
+    await updateJob(editingJobId.value, { ...jobDraft.value })
+  } else {
+    await addJob({ ...jobDraft.value })
+  }
+  showJobDialog.value = false
+}
+
+async function deleteJobFromDialog() {
+  if (!editingJobId.value) return
+  await removeJob(editingJobId.value)
+  showJobDialog.value = false
+}
+
+const showSkillDialog = ref(false)
+const editingSkillId = ref(null)
+
+function createDefaultSkillDraft() {
+  return {
+    name: '',
+    allowedTools: [],
+    systemPrompt: '',
+    model: 'claude-sonnet-4-5',
+    maxTurns: 3,
+    timeoutMs: 60000,
+  }
+}
+
+const skillDraft = ref(createDefaultSkillDraft())
+const availableToolNames = ref([
+  'read_file',
+  'write_file',
+  'list_files',
+  'grep_files',
+  'find_files',
+  'edit_file',
+  'execute_js',
+  'execute_python',
+  'git_status',
+  'git_diff',
+])
+
+function openSkillDialog(skill = null) {
+  editingSkillId.value = skill?.id || null
+  skillDraft.value = skill
+    ? {
+        name: skill.name,
+        allowedTools: skill.allowedTools || [],
+        systemPrompt: skill.systemPrompt || '',
+        model: skill.model || 'claude-sonnet-4-5',
+        maxTurns: skill.maxTurns || 3,
+        timeoutMs: skill.timeoutMs || 60000,
+      }
+    : createDefaultSkillDraft()
+  showSkillDialog.value = true
+}
+
+async function saveSkillDialog() {
+  if (!skillDraft.value.name.trim()) return
+  if (editingSkillId.value) {
+    await updateSkill(editingSkillId.value, { ...skillDraft.value })
+  } else {
+    await addSkill({ ...skillDraft.value })
+  }
+  showSkillDialog.value = false
+}
+
+async function deleteSkillFromDialog() {
+  if (!editingSkillId.value) return
+  await removeSkill(editingSkillId.value)
+  showSkillDialog.value = false
+}
+
+async function openRunHistoryDialog(job) {
+  runHistoryJobName.value = job.name
+  await loadRunHistory(job.id, 50)
+  showRunHistoryDialog.value = true
+}
+
 // ── Init ─────────────────────────────────────────────────────────────────────
 
 watch(workerReady, (ready) => {
   if (ready) {
+    initHeartbeat().catch(() => {})
     loadAuthStatus()
     loadFile()
     loadMemorySettings()
