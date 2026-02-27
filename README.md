@@ -34,8 +34,11 @@ The fastest way to see Mobile Claw in action is the included reference app — a
 git clone https://github.com/rogelioRuiz/capacitor-mobile-claw.git
 cd capacitor-mobile-claw
 
-# Install plugin + reference app deps (postinstall auto-copies Node.js worker)
+# Install deps and build the plugin
 npm install
+npm run build
+
+# Set up the reference app (postinstall auto-copies Node.js worker)
 cd examples/reference-app
 npm install
 
@@ -56,10 +59,10 @@ git clone https://github.com/rogelioRuiz/capacitor-mobile-claw.git
 cd capacitor-mobile-claw
 
 npm install
+npm run build
+
 cd examples/reference-app
 npm install
-
-# Build web app + sync + copy iOS builtin_modules
 npm run cap:build
 
 # First time only — add platform
