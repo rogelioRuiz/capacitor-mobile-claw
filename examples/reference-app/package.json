@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "setup:worker": "rm -rf public/nodejs-project && mkdir -p public && cp -R ../../nodejs-assets/nodejs-project public/nodejs-project && cd public/nodejs-project && npm install --production",
-    "preinstall": "node -e \"const{execSync}=require('child_process'),{existsSync}=require('fs');if(!existsSync('../../dist')){console.log('Building capacitor-mobile-claw...');execSync('npm install',{cwd:'../../',stdio:'inherit'})}\"",
+    "preinstall": "node -e \"const{execSync}=require('child_process'),{existsSync}=require('fs');if(!existsSync('../../dist')){console.log('Building capacitor-mobile-claw...');execSync('npm install --ignore-scripts',{cwd:'../../',stdio:'inherit'});execSync('./node_modules/.bin/tsc',{cwd:'../../',stdio:'inherit'})}\"",
     "postinstall": "npm run setup:worker",
     "dev": "vite",
     "build": "vite build",
