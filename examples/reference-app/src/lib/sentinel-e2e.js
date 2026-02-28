@@ -213,6 +213,54 @@ export async function runSentinelE2E() {
     return
   }
 
+  // ── 1b. HttpStream Native Fetch Proxy ────────────────────────────────
+  await section('1b. HttpStream Plugin', async () => {
+    const Capacitor = window.Capacitor
+    const hasHttpStream = Capacitor?.isPluginAvailable?.('HttpStream')
+    assertTruthy('HttpStream plugin registered', hasHttpStream)
+
+    const fetchProxied = !!window.__fetchProxied
+    assertTruthy('fetch proxy installed', fetchProxied)
+
+    // Test basic HTTP via proxied fetch (goes through native plugin)
+    const httpRes = await fetch('https://httpbin.org/get?test=sentinel', {
+      signal: AbortSignal.timeout(10000),
+    })
+    assert('httpbin status 200', httpRes.status, 200)
+    const httpJson = await httpRes.json()
+    assertTruthy('httpbin response has args', httpJson?.args?.test === 'sentinel')
+
+    // Test streaming — response.body should be a ReadableStream
+    const streamRes = await fetch('https://httpbin.org/stream/3', {
+      signal: AbortSignal.timeout(10000),
+    })
+    assert('stream status 200', streamRes.status, 200)
+    assertTruthy('response.body exists', !!streamRes.body)
+    assertTruthy('response.body is ReadableStream', streamRes.body instanceof ReadableStream)
+    const streamText = await streamRes.text()
+    assertTruthy('stream returned data', streamText.length > 0)
+
+    // Test CORS bypass — Anthropic API should return 401 (not CORS error)
+    try {
+      const corsRes = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-api-key': 'sk-ant-test-invalid',
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: 1, messages: [{ role: 'user', content: 'hi' }] }),
+        signal: AbortSignal.timeout(10000),
+      })
+      // 401 = auth error (not CORS) — native HTTP bypassed CORS
+      assertTruthy('Anthropic returns 401 (not CORS error)', corsRes.status === 401)
+      const errBody = await corsRes.json()
+      assertTruthy('error is auth-related (not CORS)', !String(errBody?.error?.message || '').includes('CORS'))
+    } catch (e) {
+      fail('Anthropic CORS bypass', e.message)
+    }
+  })
+
   // ── 2. MobileCron integration ────────────────────────────────────────
   await section('2. MobileCron Integration', async () => {
     const hasMobileCron = !!window.__mobileClaw._mobileCron

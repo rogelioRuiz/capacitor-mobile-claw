@@ -64,6 +64,7 @@ export class MobileClawEngine {
   private _agentRunner: AgentRunner | null = null
   private _toolProxy: ToolProxy | null = null
   private _sessionStore: SessionStore | null = null
+  private _webViewFetchProxyInstalled = false
   /** Pending pre-execute resolvers keyed by toolCallId */
   private _preExecuteResolvers = new Map<string, (result: PreExecuteResult) => void>()
 
@@ -166,6 +167,7 @@ export class MobileClawEngine {
       // ── WebView agent setup (instant, no worker dependency) ────────────
       this._useWebViewAgent = options.useWebViewAgent ?? false
       if (this._useWebViewAgent) {
+        await this._installWebViewFetchProxy()
         this._toolProxy = new ToolProxy()
         // Set up bridge send function — nodePlugin.send is available immediately
         this._toolProxy.setBridge((msg) => this.send(msg))
@@ -510,6 +512,23 @@ export class MobileClawEngine {
     }
   }
 
+  private async _installWebViewFetchProxy(): Promise<void> {
+    if (this._webViewFetchProxyInstalled || typeof window === 'undefined') {
+      return
+    }
+
+    // Only proxy fetch on native platforms where the HttpStream plugin exists.
+    // In browser dev mode, standard fetch works (no CORS issues from localhost).
+    if (!Capacitor.isNativePlatform()) {
+      return
+    }
+
+    const { createProxiedFetch } = await import('./agent/fetch-proxy')
+    window.fetch = createProxiedFetch()
+    ;(window as any).__fetchProxied = true
+    this._webViewFetchProxyInstalled = true
+  }
+
   /**
    * Pre-execute hook for WebView agent: fires the event directly to UI listeners,
    * then waits for the consumer to respond via respondToPreExecute().
@@ -612,10 +631,24 @@ export class MobileClawEngine {
   }
 
   async exchangeOAuthCode(tokenUrl: string, body: Record<string, string>, contentType?: string): Promise<any> {
-    return new Promise((resolve) => {
-      this._onMessage('oauth.exchange.result', (msg) => resolve(msg), { once: true })
-      this.send({ type: 'oauth.exchange', tokenUrl, body, ...(contentType ? { contentType } : {}) })
-    })
+    // Use Capacitor's native HTTP plugin to bypass WebView CORS restrictions.
+    // On native platforms this runs as a native HTTP call (no CORS).
+    // On web it falls back to fetch (same-origin or CORS-enabled endpoints only).
+    const { CapacitorHttp } = await import('@capacitor/core')
+    const ct = contentType || 'application/json'
+    try {
+      const resp = await CapacitorHttp.request({
+        method: 'POST',
+        url: tokenUrl,
+        headers: { 'Content-Type': ct },
+        data: body,
+        responseType: 'json',
+      })
+      const ok = resp.status >= 200 && resp.status < 300
+      return { success: ok, status: resp.status, data: resp.data, text: ok ? undefined : JSON.stringify(resp.data) }
+    } catch (err: any) {
+      return { success: false, error: err.message }
+    }
   }
 
   async getAuthStatus(provider = 'anthropic'): Promise<AuthStatus> {

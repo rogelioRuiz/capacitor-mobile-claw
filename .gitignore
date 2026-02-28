@@ -6,6 +6,7 @@ node_modules/
 
 # Build output
 dist/
+android/build/
 
 # Generated worker copy (setup:worker copies nodejs-assets → public/)
 **/public/nodejs-project/
@@ -19,9 +20,9 @@ examples/reference-app/package-lock.json
 # Logs
 *.log
 
-# Capacitor native projects (generated)
-android/
-ios/
+# Capacitor app projects (generated)
+examples/reference-app/android/
+examples/reference-app/ios/
 
 # IDE
 .vscode/

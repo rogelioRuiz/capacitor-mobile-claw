@@ -65,7 +65,7 @@ async function _doInit() {
 
     // Pass memory tools and pre-imported MobileCron to engine init
     const memoryTools = memory.getTools()
-    await engine.init({ tools: memoryTools, mobileCron: MobileCron })
+    await engine.init({ tools: memoryTools, mobileCron: MobileCron, useWebViewAgent: true })
 
     // Set readFile for memory_get tool
     memory.setReadFile((path) => engine.readFile(path))
