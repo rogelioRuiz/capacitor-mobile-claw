@@ -237,28 +237,28 @@ describe('grep_files', () => {
   it('searches file contents by regex', () => {
     const result = grepFilesTool({ pattern: 'function' })
     expect(result.matches).toBeDefined()
-    expect(result.matches!.length).toBeGreaterThan(0)
-    expect(result.matches!.some((m: any) => m.file.includes('index.ts'))).toBe(true)
+    expect(result.matches?.length).toBeGreaterThan(0)
+    expect(result.matches?.some((m: any) => m.file.includes('index.ts'))).toBe(true)
   })
 
   it('returns line numbers and content', () => {
     const result = grepFilesTool({ pattern: 'greet' })
-    const match = result.matches!.find((m: any) => m.file === 'src/index.ts')
+    const match = result.matches?.find((m: any) => m.file === 'src/index.ts')
     expect(match).toBeDefined()
-    expect(match!.line).toBeGreaterThan(0)
-    expect(match!.content).toContain('greet')
+    expect(match?.line).toBeGreaterThan(0)
+    expect(match?.content).toContain('greet')
   })
 
   it('handles case-insensitive search', () => {
     const caseSensitive = grepFilesTool({ pattern: 'hello' })
     const caseInsensitive = grepFilesTool({ pattern: 'hello', case_insensitive: true })
     // "Hello" appears in the code and README
-    expect(caseInsensitive.matches!.length).toBeGreaterThanOrEqual(caseSensitive.matches!.length)
+    expect(caseInsensitive.matches?.length).toBeGreaterThanOrEqual(caseSensitive.matches?.length)
   })
 
   it('searches recursively through subdirectories', () => {
     const result = grepFilesTool({ pattern: 'multiply' })
-    expect(result.matches!.some((m: any) => m.file === 'src/utils/math.ts')).toBe(true)
+    expect(result.matches?.some((m: any) => m.file === 'src/utils/math.ts')).toBe(true)
   })
 
   it('returns empty matches for non-matching pattern', () => {
@@ -280,53 +280,53 @@ describe('grep_files', () => {
   it('skips .git directory', () => {
     const result = grepFilesTool({ pattern: 'bare' })
     // "bare" is in .git/config but should not be found
-    expect(result.matches!.every((m: any) => !m.file.startsWith('.git/'))).toBe(true)
+    expect(result.matches?.every((m: any) => !m.file.startsWith('.git/'))).toBe(true)
   })
 
   it('skips node_modules directory', () => {
     const result = grepFilesTool({ pattern: 'module.exports' })
-    expect(result.matches!.every((m: any) => !m.file.startsWith('node_modules/'))).toBe(true)
+    expect(result.matches?.every((m: any) => !m.file.startsWith('node_modules/'))).toBe(true)
   })
 
   it('truncates long matching lines', () => {
     const longLine = 'x'.repeat(1000)
-    writeFileSync(join(WORKSPACE, 'long-line.txt'), longLine + '\n')
+    writeFileSync(join(WORKSPACE, 'long-line.txt'), `${longLine}\n`)
     const result = grepFilesTool({ pattern: 'x' })
-    const match = result.matches!.find((m: any) => m.file === 'long-line.txt')
+    const match = result.matches?.find((m: any) => m.file === 'long-line.txt')
     expect(match).toBeDefined()
-    expect(match!.content.length).toBeLessThanOrEqual(500)
+    expect(match?.content.length).toBeLessThanOrEqual(500)
   })
 
   it('searches a single file when path points to a file', () => {
     const result = grepFilesTool({ pattern: 'add', path: 'src/utils/math.ts' })
-    expect(result.matches!.length).toBeGreaterThan(0)
-    expect(result.matches!.every((m: any) => m.file === 'src/utils/math.ts')).toBe(true)
+    expect(result.matches?.length).toBeGreaterThan(0)
+    expect(result.matches?.every((m: any) => m.file === 'src/utils/math.ts')).toBe(true)
   })
 })
 
 describe('find_files', () => {
   it('finds files by glob pattern (*.ts)', () => {
     const result = findFilesTool({ pattern: '*.ts' })
-    expect(result.files!.length).toBeGreaterThan(0)
-    expect(result.files!.some((f: any) => f.path === 'src/index.ts')).toBe(true)
+    expect(result.files?.length).toBeGreaterThan(0)
+    expect(result.files?.some((f: any) => f.path === 'src/index.ts')).toBe(true)
   })
 
   it('finds files with prefix wildcard (math*)', () => {
     const result = findFilesTool({ pattern: 'math*' })
-    expect(result.files!.length).toBeGreaterThan(0)
-    expect(result.files!.some((f: any) => f.path.includes('math'))).toBe(true)
+    expect(result.files?.length).toBeGreaterThan(0)
+    expect(result.files?.some((f: any) => f.path.includes('math'))).toBe(true)
   })
 
   it('searches recursively through subdirectories', () => {
     const result = findFilesTool({ pattern: '*.ts' })
-    const paths = result.files!.map((f: any) => f.path)
+    const paths = result.files?.map((f: any) => f.path)
     expect(paths.some((p: string) => p.includes('/'))).toBe(true)
   })
 
   it('returns file metadata (path, type, size)', () => {
     const result = findFilesTool({ pattern: 'README.md' })
-    expect(result.files!.length).toBe(1)
-    const file = result.files![0]
+    expect(result.files?.length).toBe(1)
+    const file = result.files?.[0]
     expect(file.path).toBe('README.md')
     expect(file.type).toBe('file')
     expect(file.size).toBeGreaterThan(0)
@@ -345,17 +345,17 @@ describe('find_files', () => {
 
   it('skips .git directory contents', () => {
     const result = findFilesTool({ pattern: 'config' })
-    expect(result.files!.every((f: any) => !f.path.startsWith('.git/'))).toBe(true)
+    expect(result.files?.every((f: any) => !f.path.startsWith('.git/'))).toBe(true)
   })
 
   it('skips node_modules directory contents', () => {
     const result = findFilesTool({ pattern: '*.js' })
-    expect(result.files!.every((f: any) => !f.path.startsWith('node_modules/'))).toBe(true)
+    expect(result.files?.every((f: any) => !f.path.startsWith('node_modules/'))).toBe(true)
   })
 
   it('finds directories too', () => {
     const result = findFilesTool({ pattern: 'utils' })
-    expect(result.files!.some((f: any) => f.type === 'directory')).toBe(true)
+    expect(result.files?.some((f: any) => f.type === 'directory')).toBe(true)
   })
 })
 

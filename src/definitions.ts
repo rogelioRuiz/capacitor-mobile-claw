@@ -192,6 +192,13 @@ export interface MobileClawInitOptions {
   workerTimeout?: number
   /** Pre-imported MobileCron plugin instance. Avoids dynamic import issues in Capacitor WebView. */
   mobileCron?: any
+  /**
+   * Run the AI agent loop directly in the WebView instead of the Node.js worker.
+   * Eliminates worker cold start latency — the agent is available immediately.
+   * Tools that need Node.js (file I/O, git, exec) are proxied to the worker.
+   * Default: false (use worker-based agent).
+   */
+  useWebViewAgent?: boolean
 }
 
 export interface StompConfig {

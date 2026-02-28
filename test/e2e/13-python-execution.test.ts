@@ -17,7 +17,7 @@ import { beforeAll, describe, expect, it } from 'vitest'
 
 // Resolve pyodide package directory for asset loading (Vitest transforms import.meta.url)
 const _require = createRequire(import.meta.url)
-const PYODIDE_INDEX_URL = dirname(_require.resolve('pyodide/pyodide.mjs')) + '/'
+const PYODIDE_INDEX_URL = `${dirname(_require.resolve('pyodide/pyodide.mjs'))}/`
 
 // ── Replicate executePythonTool from main.js ─────────────────────────────
 
@@ -51,7 +51,7 @@ async function executePythonTool(args: { code: string }): Promise<{
     const pyodide = await getPyodide()
 
     pyodide.setStdout({ batched: (line: string) => stdoutLines.push(line) })
-    pyodide.setStderr({ batched: (line: string) => stderrLines.push('[stderr] ' + line) })
+    pyodide.setStderr({ batched: (line: string) => stderrLines.push(`[stderr] ${line}`) })
 
     const result = await Promise.race([
       pyodide.runPythonAsync(args.code),
@@ -308,6 +308,6 @@ describe('execute_python — Error Handling', () => {
     const result = await executePythonTool({
       code: 'print("x" * 60000)',
     })
-    expect(result.stdout!.length).toBeLessThanOrEqual(50000)
+    expect(result.stdout?.length).toBeLessThanOrEqual(50000)
   })
 })

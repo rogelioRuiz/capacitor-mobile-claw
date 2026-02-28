@@ -15,7 +15,6 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import { join } from 'node:path'
 import { Agent } from '@mariozechner/pi-agent-core'
 import { getModel } from '@mariozechner/pi-ai'
-import { Type } from '@sinclair/typebox'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
 const TEST_ROOT = join(process.cwd(), '.test-steering')
@@ -215,10 +214,10 @@ describe('Memory Write-Back', () => {
     // Simulate loadSystemPrompt logic
     let systemPrompt = ''
     if (existsSync(join(WORKSPACE, 'SOUL.md'))) {
-      systemPrompt += readFileSync(join(WORKSPACE, 'SOUL.md'), 'utf8') + '\n\n'
+      systemPrompt += `${readFileSync(join(WORKSPACE, 'SOUL.md'), 'utf8')}\n\n`
     }
     if (existsSync(join(WORKSPACE, 'MEMORY.md'))) {
-      systemPrompt += '## Memory\n' + readFileSync(join(WORKSPACE, 'MEMORY.md'), 'utf8') + '\n\n'
+      systemPrompt += `## Memory\n${readFileSync(join(WORKSPACE, 'MEMORY.md'), 'utf8')}\n\n`
     }
 
     expect(systemPrompt).toContain('You are helpful.')

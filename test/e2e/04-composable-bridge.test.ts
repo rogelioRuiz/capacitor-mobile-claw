@@ -32,7 +32,7 @@ function createBridge() {
           handler(msg)
         }
       : handler
-    listeners.get(type)!.add(wrapped)
+    listeners.get(type)?.add(wrapped)
     return () => listeners.get(type)?.delete(wrapped)
   }
 

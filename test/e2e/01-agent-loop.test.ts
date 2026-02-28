@@ -11,7 +11,6 @@
  * In CI, they use a mock LLM. With ANTHROPIC_API_KEY set, they hit the real API.
  */
 
-import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { beforeAll, describe, expect, it } from 'vitest'
 

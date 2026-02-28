@@ -126,7 +126,7 @@ describe('Session Transcript Persistence', () => {
       usage: { inputTokens: 50, outputTokens: 30 },
     }
 
-    appendFileSync(sessionFile, JSON.stringify(entry) + '\n')
+    appendFileSync(sessionFile, `${JSON.stringify(entry)}\n`)
 
     expect(existsSync(sessionFile)).toBe(true)
     const content = readFileSync(sessionFile, 'utf8')
@@ -150,7 +150,7 @@ describe('Session Transcript Persistence', () => {
         messages: [{ role: 'user', content: `Message ${i}` }],
         usage: { inputTokens: 10 * (i + 1), outputTokens: 5 * (i + 1) },
       }
-      appendFileSync(sessionFile, JSON.stringify(entry) + '\n')
+      appendFileSync(sessionFile, `${JSON.stringify(entry)}\n`)
     }
 
     const content = readFileSync(sessionFile, 'utf8')
@@ -167,7 +167,7 @@ describe('Session Transcript Persistence', () => {
     const sessionsJsonPath = join(SESSIONS_DIR, 'sessions.json')
 
     const sessionsIndex: Record<string, unknown> = {}
-    sessionsIndex['main'] = {
+    sessionsIndex.main = {
       'test-session-1': {
         sessionId: 'test-session-1',
         createdAt: Date.now() - 60000,
@@ -199,7 +199,7 @@ describe('Session Transcript Persistence', () => {
 
     // Read, modify, write back
     const loaded = JSON.parse(readFileSync(sessionsJsonPath, 'utf8'))
-    loaded.main['session2'] = { sessionId: 'session2', updatedAt: 2000, totalTokens: 200 }
+    loaded.main.session2 = { sessionId: 'session2', updatedAt: 2000, totalTokens: 200 }
     writeFileSync(sessionsJsonPath, JSON.stringify(loaded, null, 2))
 
     // Verify both sessions exist
@@ -267,13 +267,13 @@ describe('Tool Call Loop', () => {
     const assistantContent = messages[1].content as Array<Record<string, unknown>>
     const toolUse = assistantContent.find((b) => b.type === 'tool_use')
     expect(toolUse).toBeDefined()
-    expect(toolUse!.name).toBe('list_files')
+    expect(toolUse?.name).toBe('list_files')
 
     // Validate tool_result structure
     const userContent = messages[2].content as Array<Record<string, unknown>>
     const toolResult = userContent.find((b) => b.type === 'tool_result')
     expect(toolResult).toBeDefined()
-    expect(toolResult!.tool_use_id).toBe('toolu_abc123')
+    expect(toolResult?.tool_use_id).toBe('toolu_abc123')
   })
 
   it('should handle multiple sequential tool calls', () => {

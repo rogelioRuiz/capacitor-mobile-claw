@@ -4,15 +4,21 @@
  * Runs inside the embedded Node.js runtime provided by Capacitor-NodeJS.
  * Communicates with the Capacitor WebView UI via the bridge channel.
  *
+ * The agent loop (LLM streaming + orchestration) runs in the WebView via
+ * AgentRunner. This worker provides tool execution proxied from the WebView,
+ * plus skill/heartbeat agents that run independently in the background.
+ *
  * Responsibilities:
- * - Agent orchestration (pi-agent-core Agent class)
- * - LLM API calls (pi-ai streaming)
+ * - Tool execution proxy (tool.execute → file/git/exec tools → tool.execute.result)
  * - File tools (read/write/edit/find/grep/ls)
  * - Code execution (JS VM sandbox + Python Pyodide sandbox)
  * - Git tools (isomorphic-git)
- * - Pre-execution hook (tool.pre_execute — consumer controls approval policy)
- * - Session management (native SQLite via bridge)
+ * - Skill agent runs (setup, etc. — independent Agent instances)
+ * - Heartbeat / cron agent runs (background Agent instances)
+ * - Pre-execution hook for skill/heartbeat tools (tool.pre_execute)
+ * - Session persistence (native SQLite via bridge)
  * - Auth profile management (auth-profiles.json)
+ * - System prompt loading (IDENTITY.md, SOUL.md, MEMORY.md)
  */
 
 // ── DEBUG: Global crash catchers (iOS only shows console.error) ──────────
@@ -936,10 +942,6 @@ function getCurrentSessionKey() {
   return currentSessionKey;
 }
 
-// Idempotency: track recent message keys to silently drop duplicates
-const recentIdempotencyKeys = new Set();
-const MAX_IDEMPOTENCY_KEYS = 100;
-
 function loadSystemPrompt() {
   const workspaceDir = join(OPENCLAW_ROOT, 'workspace');
   let systemPrompt = '';
@@ -1675,275 +1677,19 @@ function _legacySetupTools() {
   ];
 }
 
-// ── Main agent run function ──────────────────────────────────────────────
-
-async function runAgentLoop(agentId, sessionKey, prompt, requestedModel, requestedProvider) {
-  const provider = requestedProvider || 'anthropic';
-  console.error(`[DEBUG] runAgentLoop START: agentId=${agentId} sessionKey=${sessionKey} provider=${provider} model=${requestedModel}`);
-  try {
-    await refreshOAuthTokenIfNeeded(agentId);
-  } catch (oauthErr) {
-    console.error(`[DEBUG] OAuth refresh failed: ${oauthErr.message}`);
-  }
-  const authProfiles = loadAuthProfiles(agentId);
-  const profileKeys = Object.keys(authProfiles.profiles || {});
-  const profileTypes = profileKeys.map(k => `${k}:${authProfiles.profiles[k]?.type}`);
-  console.error(`[DEBUG] Auth profiles: ${profileKeys.length} profiles [${profileTypes.join(', ')}] lastGood=${JSON.stringify(authProfiles.lastGood)}`);
-  const apiKey = resolveApiKeyForProvider(authProfiles, provider);
-
-  if (!apiKey) {
-    console.error(`[DEBUG] NO API KEY for provider=${provider} — sending agent.error`);
-    channel.send('message', {
-      type: 'agent.error',
-      error: `No API key configured for provider "${provider}". Go to Settings to add one.`,
-    });
-    return;
-  }
-  console.error(`[DEBUG] API key resolved for provider=${provider}: len=${apiKey.length} prefix=${apiKey.slice(0,12)}...`);
-
-  const systemPrompt = loadSystemPrompt();
-  console.error(`[DEBUG] System prompt loaded: ${systemPrompt.length} chars`);
-  const defaultModel = provider === 'anthropic' ? 'claude-sonnet-4-5' : null;
-  const modelId = requestedModel || defaultModel;
-  if (!modelId) {
-    channel.send('message', { type: 'agent.error', error: `No model specified for provider "${provider}". Select a model in Settings.` });
-    return;
-  }
-  console.error(`[DEBUG] Getting model: provider=${provider} modelId=${modelId}`);
-  const model = getModel(provider, modelId);
-  if (!model) {
-    channel.send('message', { type: 'agent.error', error: `Model "${modelId}" not found for provider "${provider}".` });
-    return;
-  }
-  console.error(`[DEBUG] Model resolved: ${JSON.stringify({id: model?.id, provider: model?.provider, api: model?.api}).slice(0,200)}`);
-
-  // Merge local tools with MCP device tools (if bridge is available)
-  const localTools = wrapToolsWithPreExecuteHook(buildAgentTools());
-  console.error(`[DEBUG] Local tools: ${localTools.length}`);
-  const mcpTools = wrapToolsWithPreExecuteHook(await discoverMcpTools());
-  console.error(`[DEBUG] MCP tools: ${mcpTools.length}`);
-  const tools = [...localTools, ...mcpTools];
-  console.error(`[DEBUG] Total tools: ${tools.length}`);
-
-  // Create Agent instance
-  const agent = new Agent({
-    initialState: {
-      systemPrompt,
-      model,
-      tools,
-      thinkingLevel: 'off',
-    },
-    convertToLlm: (messages) => messages.filter(m =>
-      m.role === 'user' || m.role === 'assistant' || m.role === 'toolResult'
-    ),
-    getApiKey: () => apiKey,
-  });
-  currentAgent = agent;
-  persistedMessageCount = 0;
-
-  // Subscribe to events → bridge channel + mid-turn checkpointing
-  agent.subscribe((event) => {
-    bridgeEvent(event);
-    // Checkpoint after each tool execution (crash loses at most the current tool call)
-    if (event.type === 'tool_execution_end' && sessionKey) {
-      _checkpointMessages(agent, agentId, sessionKey);
-    }
-  });
-
-  // Run
-  const startTime = Date.now();
-  console.error(`[DEBUG] Calling agent.prompt()...`);
-  setUserTurnActive(true);
-  try {
-    await agent.prompt(prompt);
-    console.error(`[DEBUG] agent.prompt() resolved, calling waitForIdle()...`);
-    await agent.waitForIdle();
-    console.error(`[DEBUG] agent idle. Duration=${Date.now() - startTime}ms messages=${agent.state.messages.length}`);
-
-    // Save session + send completion
-    currentSessionKey = sessionKey;
-    saveSession(agent, agentId, sessionKey, startTime);
-
-    const usage = extractUsage(agent);
-    channel.send('message', {
-      type: 'agent.completed',
-      sessionKey,
-      usage,
-      cumulativeUsage: usage,
-      durationMs: Date.now() - startTime,
-    });
-    console.error(`[DEBUG] agent.completed sent. tokens=${JSON.stringify(usage)}`);
-    // Keep currentAgent alive for multi-turn follow-ups
-    currentAbortController = null;
-  } catch (err) {
-    console.error(`[DEBUG] agent.prompt THREW: ${err.message}`);
-    console.error(`[DEBUG] Error details: status=${err.status} code=${err.code} name=${err.name}`);
-    console.error(err.stack || '(no stack)');
-    const retryable = isTransientError(err);
-    channel.send('message', {
-      type: 'agent.error',
-      error: err.message || 'Unknown error during agent execution',
-      code: err.status ? String(err.status) : undefined,
-      retryable,
-    });
-    if (retryable) {
-      // Keep agent alive for retry — only clear the abort controller
-      lastFailedPrompt = prompt;
-    } else {
-      currentAgent = null;
-      currentSessionKey = null;
-      lastFailedPrompt = null;
-    }
-    currentAbortController = null;
-  } finally {
-    setUserTurnActive(false);
-  }
-}
-
 // ── Message handler ───────────────────────────────────────────────────────
+// NOTE: agent.start / agent.stop / agent.retry / agent.steer are handled by
+// the WebView-side AgentRunner (src/agent/agent-runner.ts). The worker now
+// only handles tool.execute proxying, auth, system_prompt, skills, heartbeat,
+// session queries, config, and cron.
 
 channel.addListener('message', async (event) => {
   const msg = event;
   console.error(`[DEBUG] << RECV msg type=${msg?.type} keys=${Object.keys(msg||{}).join(',')}`);
 
   switch (msg.type) {
-    case 'agent.start': {
-      console.error(`[DEBUG] agent.start: prompt=${(msg.prompt||'').slice(0,80)} model=${msg.model} agentId=${msg.agentId} sessionKey=${msg.sessionKey}`);
-      // Idempotency: silently drop duplicate messages
-      if (msg.idempotencyKey) {
-        if (recentIdempotencyKeys.has(msg.idempotencyKey)) break;
-        recentIdempotencyKeys.add(msg.idempotencyKey);
-        if (recentIdempotencyKeys.size > MAX_IDEMPOTENCY_KEYS) {
-          const first = recentIdempotencyKeys.values().next().value;
-          recentIdempotencyKeys.delete(first);
-        }
-      }
-
-      // Echo user prompt back so the chat UI can display it
-      channel.send('message', {
-        type: 'agent.event',
-        eventType: 'user_message',
-        data: { text: msg.prompt, sessionKey: msg.sessionKey || currentSessionKey },
-      });
-
-      if (currentAgent && currentAgent.state.messages.length > 0) {
-        // Continue existing conversation — use prompt() to re-enter the agent loop.
-        // followUp() only enqueues; it doesn't re-enter _runLoop() on an idle agent.
-
-        // Auto-abort in-flight turn before sending new message
-        if (currentAgent.state.isStreaming) {
-          currentAgent.abort();
-          await currentAgent.waitForIdle();
-          channel.send('message', {
-            type: 'agent.event',
-            eventType: 'interrupted',
-            data: { reason: 'New message sent while streaming' },
-          });
-        }
-
-        const startTime = Date.now();
-        const agentId = msg.agentId || 'main';
-        const sessionKey = currentSessionKey || msg.sessionKey;
-        setUserTurnActive(true);
-        try {
-          await currentAgent.prompt(msg.prompt);
-          await currentAgent.waitForIdle();
-
-          saveSession(currentAgent, agentId, sessionKey, startTime);
-
-          const usage = extractUsage(currentAgent);
-          channel.send('message', {
-            type: 'agent.completed',
-            sessionKey,
-            usage,
-            cumulativeUsage: usage,
-            durationMs: Date.now() - startTime,
-          });
-        } catch (err) {
-          const retryable = isTransientError(err);
-          channel.send('message', {
-            type: 'agent.error',
-            error: err.message || 'Follow-up error',
-            code: err.status ? String(err.status) : undefined,
-            retryable,
-          });
-          if (retryable) {
-            lastFailedPrompt = msg.prompt;
-          } else {
-            currentAgent = null;
-            currentSessionKey = null;
-            lastFailedPrompt = null;
-          }
-        } finally {
-          setUserTurnActive(false);
-        }
-      } else {
-        // New conversation
-        currentAbortController = new AbortController();
-        await runAgentLoop(msg.agentId, msg.sessionKey, msg.prompt, msg.model, msg.provider);
-      }
-      break;
-    }
-
-    case 'agent.stop': {
-      if (currentAgent) {
-        currentAgent.abort();
-      }
-      if (currentAbortController) {
-        currentAbortController.abort();
-        currentAbortController = null;
-      }
-      break;
-    }
-
-    case 'agent.retry': {
-      // Retry last failed prompt (only works after a transient error)
-      if (!currentAgent || !lastFailedPrompt) {
-        channel.send('message', {
-          type: 'agent.error',
-          error: 'Nothing to retry — no agent or no failed prompt.',
-          retryable: false,
-        });
-        break;
-      }
-      const retryPrompt = lastFailedPrompt;
-      lastFailedPrompt = null;
-      const retryAgentId = msg.agentId || 'main';
-      const retrySessionKey = currentSessionKey || msg.sessionKey;
-      const retryStart = Date.now();
-      setUserTurnActive(true);
-      try {
-        await currentAgent.prompt(retryPrompt);
-        await currentAgent.waitForIdle();
-        saveSession(currentAgent, retryAgentId, retrySessionKey, retryStart);
-        const usage = extractUsage(currentAgent);
-        channel.send('message', {
-          type: 'agent.completed',
-          sessionKey: retrySessionKey,
-          usage,
-          cumulativeUsage: usage,
-          durationMs: Date.now() - retryStart,
-        });
-      } catch (err) {
-        const retryable = isTransientError(err);
-        channel.send('message', {
-          type: 'agent.error',
-          error: err.message || 'Retry failed',
-          code: err.status ? String(err.status) : undefined,
-          retryable,
-        });
-        if (retryable) {
-          lastFailedPrompt = retryPrompt;
-        } else {
-          currentAgent = null;
-          currentSessionKey = null;
-          lastFailedPrompt = null;
-        }
-      } finally {
-        setUserTurnActive(false);
-      }
-      break;
-    }
+    // agent.start, agent.stop, agent.retry, agent.steer are handled by
+    // WebView-side AgentRunner — no longer processed here.
 
     case 'tool.pre_execute.result': {
       const resolver = pendingPreExecuteHooks.get(msg.toolCallId);
@@ -1960,13 +1706,6 @@ channel.addListener('message', async (event) => {
       if (resolver) {
         pendingSkillToolResults.delete(msg.requestId);
         resolver(msg.result);
-      }
-      break;
-    }
-
-    case 'agent.steer': {
-      if (currentAgent) {
-        currentAgent.steer({ role: 'user', content: msg.text, timestamp: Date.now() });
       }
       break;
     }
@@ -2493,6 +2232,85 @@ channel.addListener('message', async (event) => {
           channel.send('message', { type: 'tool.invoke.result', toolName: msg.toolName, error: err.message });
         }
       }
+      break;
+    }
+
+    case 'tool.execute': {
+      // WebView-side agent runner proxies tool calls to the worker.
+      // This is the counterpart to ToolProxy in src/agent/tool-proxy.ts.
+      const toolExecMap = {
+        read_file: readFileTool,
+        write_file: writeFileTool,
+        list_files: listFilesTool,
+        grep_files: grepFilesTool,
+        find_files: findFilesTool,
+        edit_file: editFileTool,
+        execute_js: executeJsTool,
+        execute_python: executePythonTool,
+        git_init: gitInitTool,
+        git_status: gitStatusTool,
+        git_add: gitAddTool,
+        git_commit: gitCommitTool,
+        git_log: gitLogTool,
+        git_diff: gitDiffTool,
+      };
+      const toolFn = toolExecMap[msg.toolName];
+      if (!toolFn) {
+        channel.send('message', {
+          type: 'tool.execute.result',
+          toolCallId: msg.toolCallId,
+          toolName: msg.toolName,
+          error: `Unknown tool: ${msg.toolName}`,
+        });
+      } else {
+        try {
+          const result = await toolFn(msg.args || {});
+          channel.send('message', {
+            type: 'tool.execute.result',
+            toolCallId: msg.toolCallId,
+            toolName: msg.toolName,
+            result,
+          });
+        } catch (err) {
+          channel.send('message', {
+            type: 'tool.execute.result',
+            toolCallId: msg.toolCallId,
+            toolName: msg.toolName,
+            error: err.message,
+          });
+        }
+      }
+      break;
+    }
+
+    case 'auth.getToken': {
+      // WebView-side agent runner requests auth credentials
+      const agentId = msg.agentId || 'main';
+      const provider = msg.provider || 'anthropic';
+      try {
+        await refreshOAuthTokenIfNeeded(agentId);
+      } catch (e) {
+        console.warn(`[auth.getToken] OAuth refresh failed: ${e.message}`);
+      }
+      const authProfiles = loadAuthProfiles(agentId);
+      const apiKey = resolveApiKeyForProvider(authProfiles, provider);
+      // Check if the resolved key is an OAuth token
+      const isOAuth = apiKey ? apiKey.startsWith('sk-ant-oat') : false;
+      channel.send('message', {
+        type: 'auth.getToken.result',
+        apiKey: apiKey || null,
+        isOAuth,
+      });
+      break;
+    }
+
+    case 'system_prompt.get': {
+      // WebView-side agent runner requests the system prompt
+      const sysPrompt = loadSystemPrompt();
+      channel.send('message', {
+        type: 'system_prompt.get.result',
+        systemPrompt: sysPrompt,
+      });
       break;
     }
 

@@ -28,5 +28,20 @@
   },
   "files": {
     "includes": ["src/**", "test/**", "vitest.config.ts", "vitest.e2e.config.ts", "commitlint.config.js"]
-  }
+  },
+  "overrides": [
+    {
+      "includes": ["test/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noNonNullAssertion": "off"
+          },
+          "suspicious": {
+            "noTemplateCurlyInString": "off"
+          }
+        }
+      }
+    }
+  ]
 }

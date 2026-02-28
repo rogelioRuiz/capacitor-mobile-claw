@@ -9,7 +9,7 @@
  * - config.update setApiKey persists to auth-profiles.json
  */
 
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
@@ -74,7 +74,7 @@ function handleConfigStatus() {
       const key = profile.key || profile.access || ''
       if (key) {
         hasKey = true
-        masked = key.length > 11 ? key.substring(0, 7) + '***' + key.substring(key.length - 4) : '***'
+        masked = key.length > 11 ? `${key.substring(0, 7)}***${key.substring(key.length - 4)}` : '***'
         break
       }
     }

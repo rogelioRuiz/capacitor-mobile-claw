@@ -12,6 +12,9 @@
  */
 
 import { Capacitor } from '@capacitor/core'
+import { AgentRunner, type PreExecuteResult } from './agent/agent-runner'
+import { SessionStore } from './agent/session-store'
+import { ToolProxy } from './agent/tool-proxy'
 import type {
   AuthStatus,
   CronJobInput,
@@ -56,6 +59,14 @@ export class MobileClawEngine {
   private _dbHandler: DbBridgeHandler | null = null
   private _mobileCron: any = null
 
+  // ── WebView agent (when useWebViewAgent is enabled) ───────────────────
+  private _useWebViewAgent = false
+  private _agentRunner: AgentRunner | null = null
+  private _toolProxy: ToolProxy | null = null
+  private _sessionStore: SessionStore | null = null
+  /** Pending pre-execute resolvers keyed by toolCallId */
+  private _preExecuteResolvers = new Map<string, (result: PreExecuteResult) => void>()
+
   // ── Public getters ─────────────────────────────────────────────────────
 
   get ready(): boolean {
@@ -89,6 +100,16 @@ export class MobileClawEngine {
   /** Access the MCP server manager for status, restart, etc. */
   get mcpManager(): McpServerManager | null {
     return this._mcpManager
+  }
+
+  /** Whether the WebView agent is enabled. */
+  get useWebViewAgent(): boolean {
+    return this._useWebViewAgent
+  }
+
+  /** Access the agent runner (only available when useWebViewAgent is true). */
+  get agentRunner(): AgentRunner | null {
+    return this._agentRunner
   }
 
   // ── Lifecycle ──────────────────────────────────────────────────────────
@@ -142,6 +163,47 @@ export class MobileClawEngine {
       this._dbHandler = new DbBridgeHandler(this.nodePlugin)
       this._dbHandler.start()
 
+      // ── WebView agent setup (instant, no worker dependency) ────────────
+      this._useWebViewAgent = options.useWebViewAgent ?? false
+      if (this._useWebViewAgent) {
+        this._toolProxy = new ToolProxy()
+        // Set up bridge send function — nodePlugin.send is available immediately
+        this._toolProxy.setBridge((msg) => this.send(msg))
+
+        this._sessionStore = new SessionStore()
+
+        this._agentRunner = new AgentRunner({
+          dispatch: (msg) => this._dispatch(msg),
+          toolProxy: this._toolProxy,
+          preExecuteHook: (toolCallId, toolName, args, signal) =>
+            this._handlePreExecute(toolCallId, toolName, args, signal),
+        })
+
+        // Listen for tool execution results from the worker
+        this._onMessage('tool.execute.result', (msg) => {
+          this._toolProxy?.handleResult(msg)
+        })
+
+        // Auto-save session to SQLite on agent completion
+        this._onMessage('agent.completed', (msg) => {
+          if (!this._useWebViewAgent || !this._sessionStore || !this._agentRunner?.currentAgent) return
+          const agent = this._agentRunner.currentAgent
+          const sessionKey = msg.sessionKey || this._currentSessionKey
+          if (!sessionKey) return
+          this._sessionStore
+            .saveSession({
+              sessionKey,
+              agentId: 'main',
+              messages: agent.state.messages as any[],
+              model: msg.usage?.model,
+              startTime: msg.durationMs ? Date.now() - msg.durationMs : Date.now(),
+            })
+            .catch((err: any) => {
+              console.warn('[MobileClaw] Session save failed:', err?.message)
+            })
+        })
+      }
+
       // Set up worker.ready promise before MCP init (captures early ready events)
       const timeout = options.workerTimeout ?? 60_000
       const readyPromise = new Promise<MobileClawReadyInfo>((resolve) => {
@@ -162,6 +224,8 @@ export class MobileClawEngine {
             this._mcpToolCount = msg.mcpToolCount ?? this._mcpToolCount
             this._loading = false
             this._error = null
+            // Flush pending tool calls now that the worker is ready
+            this._toolProxy?.setWorkerReady()
             resolve({
               nodeVersion: msg.nodeVersion,
               openclawRoot: msg.openclawRoot,
@@ -358,6 +422,26 @@ export class MobileClawEngine {
     if (!this._currentSessionKey) {
       this._currentSessionKey = `session-${Date.now()}`
     }
+
+    // ── WebView agent path: run agent loop directly, no worker hop ─────
+    if (this._useWebViewAgent && this._agentRunner) {
+      const sessionKey = this._currentSessionKey
+
+      // Follow-up on existing conversation
+      if (this._agentRunner.currentAgent && this._agentRunner.sessionKey === sessionKey) {
+        // Fire and forget — events dispatch directly via _dispatch()
+        this._agentRunner.followUp(prompt).catch((err) => {
+          this._dispatch({ type: 'agent.error', error: err.message })
+        })
+        return { sessionKey }
+      }
+
+      // New session — fetch auth + system prompt from worker
+      this._runWebViewAgent(prompt, agentId, sessionKey, options)
+      return { sessionKey }
+    }
+
+    // ── Worker agent path (legacy) ────────────────────────────────────
     const idempotencyKey =
       typeof crypto !== 'undefined' && crypto.randomUUID
         ? crypto.randomUUID()
@@ -374,6 +458,99 @@ export class MobileClawEngine {
     return { sessionKey: this._currentSessionKey }
   }
 
+  /**
+   * Start a WebView-side agent run. Fetches auth + system prompt from the
+   * worker (async), then starts the agent loop immediately in the WebView.
+   */
+  private async _runWebViewAgent(
+    prompt: string,
+    agentId: string,
+    sessionKey: string,
+    options?: { model?: string; provider?: string },
+  ): Promise<void> {
+    if (!this._agentRunner) return
+    const provider = options?.provider || 'anthropic'
+
+    try {
+      // Fetch auth and system prompt from worker in parallel.
+      // These are fast bridge calls — worker doesn't need to be fully ready
+      // for auth.getToken (reads filesystem) or system_prompt.get.
+      // But if worker isn't ready yet, these will queue in the bridge.
+      const [authResult, promptResult] = await Promise.all([
+        this._waitForMessage<{ apiKey: string | null; isOAuth: boolean }>('auth.getToken.result', {
+          type: 'auth.getToken',
+          provider,
+          agentId,
+        }),
+        this._waitForMessage<{ systemPrompt: string }>('system_prompt.get.result', {
+          type: 'system_prompt.get',
+          agentId,
+        }),
+      ])
+
+      if (!authResult.apiKey) {
+        this._dispatch({
+          type: 'agent.error',
+          error: `No API key configured for provider "${provider}". Go to Settings to add one.`,
+        })
+        return
+      }
+
+      await this._agentRunner.run({
+        prompt,
+        agentId,
+        sessionKey,
+        model: options?.model,
+        provider,
+        apiKey: authResult.apiKey,
+        systemPrompt: promptResult.systemPrompt,
+      })
+    } catch (err: any) {
+      this._dispatch({ type: 'agent.error', error: err.message || 'WebView agent failed' })
+    }
+  }
+
+  /**
+   * Pre-execute hook for WebView agent: fires the event directly to UI listeners,
+   * then waits for the consumer to respond via respondToPreExecute().
+   */
+  private _handlePreExecute(
+    toolCallId: string,
+    toolName: string,
+    args: Record<string, unknown>,
+    signal?: AbortSignal,
+  ): Promise<PreExecuteResult> {
+    return new Promise((resolve) => {
+      const PRE_EXECUTE_TTL_MS = 120_000
+
+      const timer = setTimeout(() => {
+        this._preExecuteResolvers.delete(toolCallId)
+        this._dispatch({ type: 'tool.pre_execute.expired', toolCallId, toolName })
+        resolve({ deny: true, denyReason: 'pre_execute_timeout', args })
+      }, PRE_EXECUTE_TTL_MS)
+
+      this._preExecuteResolvers.set(toolCallId, (result) => {
+        clearTimeout(timer)
+        resolve(result)
+      })
+
+      if (signal) {
+        signal.addEventListener(
+          'abort',
+          () => {
+            clearTimeout(timer)
+            this._preExecuteResolvers.delete(toolCallId)
+            resolve({ deny: true, denyReason: 'aborted', args })
+          },
+          { once: true },
+        )
+      }
+
+      // Fire pre-execute event directly to UI listeners
+      this._dispatch({ type: 'tool.pre_execute', toolCallId, toolName, args })
+    })
+  }
+
   async getModels(
     provider = 'anthropic',
   ): Promise<Array<{ id: string; name: string; description: string; default?: boolean }>> {
@@ -384,6 +561,10 @@ export class MobileClawEngine {
   }
 
   async stopTurn(): Promise<void> {
+    if (this._useWebViewAgent && this._agentRunner) {
+      this._agentRunner.abort()
+      return
+    }
     await this.send({ type: 'agent.stop' })
   }
 
@@ -397,6 +578,16 @@ export class MobileClawEngine {
     deny?: boolean,
     denyReason?: string,
   ): Promise<void> {
+    // WebView agent path: resolve the pre-execute promise directly
+    if (this._useWebViewAgent) {
+      const resolver = this._preExecuteResolvers.get(toolCallId)
+      if (resolver) {
+        this._preExecuteResolvers.delete(toolCallId)
+        resolver({ deny: deny ?? false, denyReason, args })
+        return
+      }
+    }
+    // Worker agent path: send response to worker
     await this.send({
       type: 'tool.pre_execute.result',
       toolCallId,
@@ -407,6 +598,10 @@ export class MobileClawEngine {
   }
 
   async steerAgent(text: string): Promise<void> {
+    if (this._useWebViewAgent && this._agentRunner) {
+      this._agentRunner.steer(text)
+      return
+    }
     await this.send({ type: 'agent.steer', text })
   }
 
@@ -612,6 +807,9 @@ export class MobileClawEngine {
 
   async clearConversation(): Promise<{ success: boolean }> {
     this._currentSessionKey = null
+    if (this._useWebViewAgent && this._agentRunner) {
+      this._agentRunner.clear()
+    }
     return new Promise((resolve) => {
       this._onMessage('session.clear.result', (msg) => resolve(msg), { once: true })
       this.send({ type: 'session.clear' })

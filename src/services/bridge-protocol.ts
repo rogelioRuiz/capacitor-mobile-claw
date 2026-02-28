@@ -101,6 +101,43 @@ export interface ToolPreExecuteResultMessage {
   denyReason?: string
 }
 
+// ── Tool execution proxy (UI → Node.js) ─────────────────────────────────
+
+/**
+ * WebView-side agent runner sends a tool call to the worker for execution.
+ * The worker dispatches to the appropriate tool function (fs, git, vm, etc.)
+ * and responds with `tool.execute.result`.
+ */
+export interface ToolExecuteMessage {
+  type: 'tool.execute'
+  toolCallId: string
+  toolName: string
+  args: Record<string, unknown>
+}
+
+// ── Auth token request (UI → Node.js) ───────────────────────────────────
+
+/**
+ * WebView-side agent runner requests auth credentials from the worker
+ * (which manages auth-profiles.json on the filesystem).
+ */
+export interface AuthGetTokenMessage {
+  type: 'auth.getToken'
+  provider: string
+  agentId?: string
+}
+
+// ── System prompt request (UI → Node.js) ────────────────────────────────
+
+/**
+ * WebView-side agent runner requests the system prompt from the worker
+ * (which reads IDENTITY.md, SOUL.md, MEMORY.md from the workspace).
+ */
+export interface SystemPromptGetMessage {
+  type: 'system_prompt.get'
+  agentId?: string
+}
+
 export interface HeartbeatWakeMessage {
   type: 'heartbeat.wake'
   source?: string
@@ -184,6 +221,9 @@ export type UIToNodeMessage =
   | FileWriteMessage
   | SkillStartMessage
   | ToolPreExecuteResultMessage
+  | ToolExecuteMessage
+  | AuthGetTokenMessage
+  | SystemPromptGetMessage
   | HeartbeatWakeMessage
   | HeartbeatSetMessage
   | SchedulerSetMessage
@@ -281,6 +321,31 @@ export interface ConfigStatusResultMessage {
 export interface SessionClearResultMessage {
   type: 'session.clear.result'
   success: boolean
+}
+
+// ── Tool execution proxy response (Node.js → UI) ─────────────────────────
+
+export interface ToolExecuteResultMessage {
+  type: 'tool.execute.result'
+  toolCallId: string
+  toolName: string
+  result?: unknown
+  error?: string
+}
+
+// ── Auth token response (Node.js → UI) ───────────────────────────────────
+
+export interface AuthGetTokenResultMessage {
+  type: 'auth.getToken.result'
+  apiKey: string | null
+  isOAuth: boolean
+}
+
+// ── System prompt response (Node.js → UI) ────────────────────────────────
+
+export interface SystemPromptGetResultMessage {
+  type: 'system_prompt.get.result'
+  systemPrompt: string
 }
 
 // ── Pre-execution hook (Node.js → UI) ─────────────────────────────────────
@@ -459,6 +524,9 @@ export type NodeToUIMessage =
   | FileReadResultMessage
   | ConfigStatusResultMessage
   | SessionClearResultMessage
+  | ToolExecuteResultMessage
+  | AuthGetTokenResultMessage
+  | SystemPromptGetResultMessage
   | ToolPreExecuteMessage
   | ToolPreExecuteExpiredMessage
   | HeartbeatStartedMessage

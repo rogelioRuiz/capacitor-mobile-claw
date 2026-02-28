@@ -20,8 +20,8 @@ function executeJsTool(args: { code: string }) {
   const sandbox: any = {
     console: {
       log: (...a: any[]) => stdoutLines.push(a.map(String).join(' ')),
-      warn: (...a: any[]) => stdoutLines.push('[warn] ' + a.map(String).join(' ')),
-      error: (...a: any[]) => stdoutLines.push('[error] ' + a.map(String).join(' ')),
+      warn: (...a: any[]) => stdoutLines.push(`[warn] ${a.map(String).join(' ')}`),
+      error: (...a: any[]) => stdoutLines.push(`[error] ${a.map(String).join(' ')}`),
     },
     Math,
     Date,
@@ -195,7 +195,7 @@ describe('execute_js — Error Handling', () => {
   it('handles timeout (infinite loop)', () => {
     const result = executeJsTool({ code: 'while(true) {}' })
     expect(result.error).toBeDefined()
-    expect(result.error!.toLowerCase()).toContain('timed out')
+    expect(result.error?.toLowerCase()).toContain('timed out')
   }, 10000)
 
   it('handles undefined variable access', () => {

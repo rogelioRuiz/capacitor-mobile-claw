@@ -1,6 +1,6 @@
 {
   "name": "capacitor-mobile-claw",
-  "version": "1.5.7",
+  "version": "1.6.0",
   "description": "On-device AI agent engine for Capacitor apps — embedded Node.js worker with LLM, file tools, code execution, git, and extensible MCP server",
   "main": "dist/esm/index.js",
   "types": "dist/esm/index.d.ts",
@@ -23,6 +23,11 @@
     "nodejs-assets/",
     "!nodejs-assets/nodejs-project/node_modules/"
   ],
+  "dependencies": {
+    "@mariozechner/pi-agent-core": "^0.55.1",
+    "@mariozechner/pi-ai": "^0.55.1",
+    "@sinclair/typebox": "^0.34.41"
+  },
   "peerDependencies": {
     "@capacitor-community/sqlite": ">=6.0.0",
     "@capacitor/core": "^8.0.0",
@@ -47,10 +52,7 @@
     "@choreruiz/capacitor-node-js": "^1.0.0",
     "@commitlint/cli": "^19.0.0",
     "@commitlint/config-conventional": "^19.0.0",
-    "@mariozechner/pi-agent-core": "^0.55.1",
-    "@mariozechner/pi-ai": "^0.55.1",
     "@modelcontextprotocol/sdk": "^1.26.0",
-    "@sinclair/typebox": "^0.34.41",
     "@stomp/stompjs": "^7.0.0",
     "isomorphic-git": "^1.37.2",
     "lefthook": "^1.6.0",

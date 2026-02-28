@@ -78,7 +78,7 @@ export class StompServerTransport implements Transport {
       }
 
       this.stompClient.onStompError = (frame: IFrame) => {
-        const msg = frame.headers['message'] || 'STOMP error'
+        const msg = frame.headers.message || 'STOMP error'
         const error = new Error(`[MCP-STOMP] ${msg}`)
         console.error(error.message, frame.body)
         this.onerror?.(error)

@@ -12,8 +12,8 @@
  */
 
 import * as fs from 'node:fs'
-import { existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import git from 'isomorphic-git'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
@@ -222,18 +222,18 @@ describe('git_status', () => {
 
     const result = await gitStatusTool()
     expect(result.files).toBeDefined()
-    const hello = result.files!.find((f: any) => f.path === 'hello.txt')
+    const hello = result.files?.find((f: any) => f.path === 'hello.txt')
     expect(hello).toBeDefined()
-    expect(hello!.status).toBe('untracked')
+    expect(hello?.status).toBe('untracked')
   })
 
   it('shows staged files after git_add', async () => {
     await gitAddTool({ path: 'hello.txt' })
 
     const result = await gitStatusTool()
-    const hello = result.files!.find((f: any) => f.path === 'hello.txt')
+    const hello = result.files?.find((f: any) => f.path === 'hello.txt')
     expect(hello).toBeDefined()
-    expect(hello!.status).toBe('added')
+    expect(hello?.status).toBe('added')
   })
 })
 
@@ -253,8 +253,8 @@ describe('git_add', () => {
 
     // Verify third.txt is staged
     const status = await gitStatusTool()
-    const third = status.files!.find((f: any) => f.path === 'third.txt')
-    expect(third!.status).toBe('added')
+    const third = status.files?.find((f: any) => f.path === 'third.txt')
+    expect(third?.status).toBe('added')
   })
 })
 
@@ -263,14 +263,14 @@ describe('git_commit', () => {
     const result = await gitCommitTool({ message: 'Initial commit' })
     expect(result.success).toBe(true)
     expect(result.sha).toBeDefined()
-    expect(result.sha!.length).toBe(40) // SHA-1 hash
+    expect(result.sha?.length).toBe(40) // SHA-1 hash
     expect(result.message).toBe('Initial commit')
   })
 
   it('uses default author name/email', async () => {
     const log = await gitLogTool({ max_count: 1 })
-    expect(log.commits![0].author).toBe('mobile-claw')
-    expect(log.commits![0].email).toBe('agent@mobile-claw.local')
+    expect(log.commits?.[0].author).toBe('mobile-claw')
+    expect(log.commits?.[0].email).toBe('agent@mobile-claw.local')
   })
 
   it('uses custom author name/email', async () => {
@@ -283,8 +283,8 @@ describe('git_commit', () => {
     })
 
     const log = await gitLogTool({ max_count: 1 })
-    expect(log.commits![0].author).toBe('Test User')
-    expect(log.commits![0].email).toBe('test@example.com')
+    expect(log.commits?.[0].author).toBe('Test User')
+    expect(log.commits?.[0].email).toBe('test@example.com')
   })
 
   it('returns error when nothing to commit', async () => {
@@ -299,17 +299,17 @@ describe('git_log', () => {
   it('returns commits', async () => {
     const result = await gitLogTool({})
     expect(result.commits).toBeDefined()
-    expect(result.commits!.length).toBeGreaterThanOrEqual(2)
+    expect(result.commits?.length).toBeGreaterThanOrEqual(2)
   })
 
   it('respects max_count parameter', async () => {
     const result = await gitLogTool({ max_count: 1 })
-    expect(result.commits!.length).toBe(1)
+    expect(result.commits?.length).toBe(1)
   })
 
   it('includes sha, message, author, timestamp', async () => {
     const result = await gitLogTool({ max_count: 1 })
-    const commit = result.commits![0]
+    const commit = result.commits?.[0]
     expect(commit.sha).toBeDefined()
     expect(commit.sha.length).toBe(40)
     expect(commit.message).toBeDefined()
@@ -323,8 +323,8 @@ describe('git_log', () => {
   it('newest commit is first', async () => {
     const result = await gitLogTool({})
     // The newest commit should be more recent than the last one
-    const first = new Date(result.commits![0].timestamp).getTime()
-    const last = new Date(result.commits![result.commits!.length - 1].timestamp).getTime()
+    const first = new Date(result.commits?.[0].timestamp).getTime()
+    const last = new Date(result.commits?.[result.commits?.length - 1].timestamp).getTime()
     expect(first).toBeGreaterThanOrEqual(last)
   })
 })
@@ -335,27 +335,27 @@ describe('git_diff', () => {
 
     const result = await gitDiffTool({})
     expect(result.changes).toBeDefined()
-    const hello = result.changes!.find((c: any) => c.path === 'hello.txt')
+    const hello = result.changes?.find((c: any) => c.path === 'hello.txt')
     expect(hello).toBeDefined()
-    expect(hello!.type).toBe('modified')
-    expect(hello!.previous).toContain('Hello World')
-    expect(hello!.current).toContain('Hello Modified World')
+    expect(hello?.type).toBe('modified')
+    expect(hello?.previous).toContain('Hello World')
+    expect(hello?.current).toContain('Hello Modified World')
   })
 
   it('shows staged changes with cached=true', async () => {
     await gitAddTool({ path: 'hello.txt' })
 
     const result = await gitDiffTool({ cached: true })
-    const hello = result.changes!.find((c: any) => c.path === 'hello.txt')
+    const hello = result.changes?.find((c: any) => c.path === 'hello.txt')
     expect(hello).toBeDefined()
-    expect(hello!.type).toBe('modified')
+    expect(hello?.type).toBe('modified')
   })
 
   it('returns empty for clean working tree', async () => {
     await gitCommitTool({ message: 'Commit modified hello' })
 
     const result = await gitDiffTool({})
-    expect(result.changes!.length).toBe(0)
+    expect(result.changes?.length).toBe(0)
   })
 
   it('shows added file diff', async () => {
@@ -363,11 +363,11 @@ describe('git_diff', () => {
     await gitAddTool({ path: 'brand-new.txt' })
 
     const result = await gitDiffTool({ cached: true })
-    const newFile = result.changes!.find((c: any) => c.path === 'brand-new.txt')
+    const newFile = result.changes?.find((c: any) => c.path === 'brand-new.txt')
     expect(newFile).toBeDefined()
-    expect(newFile!.type).toBe('added')
-    expect(newFile!.previous).toBeNull()
-    expect(newFile!.current).toContain('Brand new content')
+    expect(newFile?.type).toBe('added')
+    expect(newFile?.previous).toBeNull()
+    expect(newFile?.current).toContain('Brand new content')
   })
 })
 
@@ -399,9 +399,9 @@ describe('Full git workflow', () => {
 
     // 6. Diff (unstaged)
     const diff1 = await gitDiffTool({})
-    expect(diff1.changes!.length).toBe(1)
-    expect(diff1.changes![0].path).toBe('app.js')
-    expect(diff1.changes![0].type).toBe('modified')
+    expect(diff1.changes?.length).toBe(1)
+    expect(diff1.changes?.[0].path).toBe('app.js')
+    expect(diff1.changes?.[0].type).toBe('modified')
 
     // 7. Add + commit
     await gitAddTool({ path: '.' })
@@ -410,9 +410,9 @@ describe('Full git workflow', () => {
 
     // 8. Log
     const log = await gitLogTool({})
-    expect(log.commits!.length).toBe(2)
-    expect(log.commits![0].message).toContain('v2')
-    expect(log.commits![1].message).toContain('initial')
-    expect(log.commits![1].sha).toBe(sha1)
+    expect(log.commits?.length).toBe(2)
+    expect(log.commits?.[0].message).toContain('v2')
+    expect(log.commits?.[1].message).toContain('initial')
+    expect(log.commits?.[1].sha).toBe(sha1)
   })
 })
