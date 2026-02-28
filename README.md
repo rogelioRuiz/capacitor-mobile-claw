@@ -98,6 +98,8 @@ Once the app launches, enter your Anthropic API key in settings and start chatti
 
 The agent loop runs directly in the WebView for instant cold start — no waiting for Node.js worker boot. LLM API calls are routed through native HTTP (OkHttp / URLSession) to bypass WebView CORS, with full SSE streaming. Worker tools (file I/O, git, code exec) are transparently proxied via the bridge.
 
+> A **worker agent** mode is also available (`useWebViewAgent` defaults to `false`) — the full agent loop runs inside the embedded Node.js worker for complete isolation. Both modes share the same API.
+
 ```
 ┌──────────────────────────────────────────────────────────┐
 │  Your App (Vue, React, Svelte, vanilla JS)                │
