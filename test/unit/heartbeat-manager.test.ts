@@ -48,13 +48,13 @@ vi.mock('../../src/agent/agent-runner', () => ({
 }))
 
 import {
-  HeartbeatManager,
   buildHeartbeatPrompt,
-  fnv1aHash,
-  isHeartbeatOk,
-  errorBackoffMs,
-  isWithinActiveHours,
   computeNextRunAt,
+  errorBackoffMs,
+  fnv1aHash,
+  HeartbeatManager,
+  isHeartbeatOk,
+  isWithinActiveHours,
 } from '../../src/agent/heartbeat-manager'
 
 function createCronDb(overrides: Record<string, any> = {}) {
@@ -338,13 +338,8 @@ describe('HeartbeatManager', () => {
     )
     expect(dispatched.find((msg) => msg.type === 'cron.job.started')?.jobId).toBe('job-main')
     expect(dispatched.find((msg) => msg.type === 'cron.job.completed')?.jobId).toBe('job-main')
-    expect(cronDb.updateCronJob).toHaveBeenCalledWith(
-      'job-main',
-      expect.objectContaining({ lastRunStatus: 'ok' }),
-    )
-    expect(cronDb.insertCronRun).toHaveBeenCalledWith(
-      expect.objectContaining({ jobId: 'job-main', status: 'ok' }),
-    )
+    expect(cronDb.updateCronJob).toHaveBeenCalledWith('job-main', expect.objectContaining({ lastRunStatus: 'ok' }))
+    expect(cronDb.insertCronRun).toHaveBeenCalledWith(expect.objectContaining({ jobId: 'job-main', status: 'ok' }))
   })
 
   // ── Cron job with sessionTarget='isolated' ─────────────────────────────
@@ -382,9 +377,7 @@ describe('HeartbeatManager', () => {
     expect(cronRunCall.sessionKey).toContain('cron/job-iso/')
 
     expect(dispatched.find((msg) => msg.type === 'cron.job.completed')?.jobId).toBe('job-iso')
-    expect(cronDb.insertCronRun).toHaveBeenCalledWith(
-      expect.objectContaining({ jobId: 'job-iso' }),
-    )
+    expect(cronDb.insertCronRun).toHaveBeenCalledWith(expect.objectContaining({ jobId: 'job-iso' }))
   })
 })
 

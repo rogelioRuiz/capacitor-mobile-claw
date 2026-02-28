@@ -153,7 +153,7 @@ export class CronDbAccess {
 
     if (patch.nextRunAt !== undefined || patch.next_run_at !== undefined) {
       sets.push('next_run_at = ?')
-      params.push((patch.nextRunAt ?? patch.next_run_at) ?? null)
+      params.push(patch.nextRunAt ?? patch.next_run_at ?? null)
     }
     if (patch.lastHash !== undefined || patch.last_heartbeat_hash !== undefined) {
       sets.push('last_heartbeat_hash = ?')
@@ -161,7 +161,7 @@ export class CronDbAccess {
     }
     if (patch.lastSentAt !== undefined || patch.last_heartbeat_sent_at !== undefined) {
       sets.push('last_heartbeat_sent_at = ?')
-      params.push((patch.lastSentAt ?? patch.last_heartbeat_sent_at) ?? null)
+      params.push(patch.lastSentAt ?? patch.last_heartbeat_sent_at ?? null)
     }
 
     sets.push('updated_at = ?')
@@ -315,11 +315,11 @@ export class CronDbAccess {
 
     if (patch.lastRunAt !== undefined || patch.last_run_at !== undefined) {
       sets.push('last_run_at = ?')
-      params.push((patch.lastRunAt ?? patch.last_run_at) ?? null)
+      params.push(patch.lastRunAt ?? patch.last_run_at ?? null)
     }
     if (patch.nextRunAt !== undefined || patch.next_run_at !== undefined) {
       sets.push('next_run_at = ?')
-      params.push((patch.nextRunAt ?? patch.next_run_at) ?? null)
+      params.push(patch.nextRunAt ?? patch.next_run_at ?? null)
     }
     if (patch.lastRunStatus !== undefined || patch.last_run_status !== undefined) {
       sets.push('last_run_status = ?')
@@ -331,7 +331,7 @@ export class CronDbAccess {
     }
     if (patch.lastDurationMs !== undefined || patch.last_duration_ms !== undefined) {
       sets.push('last_duration_ms = ?')
-      params.push((patch.lastDurationMs ?? patch.last_duration_ms) ?? null)
+      params.push(patch.lastDurationMs ?? patch.last_duration_ms ?? null)
     }
     if (patch.lastResponseHash !== undefined || patch.last_response_hash !== undefined) {
       sets.push('last_response_hash = ?')
@@ -339,7 +339,7 @@ export class CronDbAccess {
     }
     if (patch.lastResponseSentAt !== undefined || patch.last_response_sent_at !== undefined) {
       sets.push('last_response_sent_at = ?')
-      params.push((patch.lastResponseSentAt ?? patch.last_response_sent_at) ?? null)
+      params.push(patch.lastResponseSentAt ?? patch.last_response_sent_at ?? null)
     }
     if (patch.consecutiveErrors !== undefined || patch.consecutive_errors !== undefined) {
       sets.push('consecutive_errors = ?')
@@ -415,7 +415,9 @@ export class CronDbAccess {
 
   async getMaxMessageSequence(sessionKey: string): Promise<number> {
     await this.ensureReady()
-    const row = await this._queryOne('SELECT MAX(sequence) as max_seq FROM messages WHERE session_key = ?', [sessionKey])
+    const row = await this._queryOne('SELECT MAX(sequence) as max_seq FROM messages WHERE session_key = ?', [
+      sessionKey,
+    ])
     return Number.isFinite(row?.max_seq) ? row.max_seq : -1
   }
 

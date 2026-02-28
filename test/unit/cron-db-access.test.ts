@@ -27,11 +27,7 @@ vi.mock('@capacitor/core', () => ({
 
 vi.mock('@capacitor-community/sqlite', () => ({
   CapacitorSQLite: {},
-  SQLiteConnection: class {
-    constructor(_plugin: any) {
-      return sqliteState.connection
-    }
-  },
+  SQLiteConnection: vi.fn(() => sqliteState.connection),
 }))
 
 import { CronDbAccess } from '../../src/agent/cron-db-access'
@@ -124,7 +120,9 @@ describe('CronDbAccess', () => {
       lastSentAt: 123,
     })
 
-    const updateCall = sqliteState.db.run.mock.calls.find(([sql]: [string]) => sql.includes('UPDATE heartbeat_config SET'))
+    const updateCall = sqliteState.db.run.mock.calls.find(([sql]: [string]) =>
+      sql.includes('UPDATE heartbeat_config SET'),
+    )
     expect(updateCall).toBeDefined()
     expect(updateCall?.[0]).toContain('last_heartbeat_hash = ?')
     expect(updateCall?.[0]).toContain('last_heartbeat_sent_at = ?')

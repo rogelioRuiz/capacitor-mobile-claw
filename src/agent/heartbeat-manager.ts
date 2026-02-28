@@ -1,10 +1,5 @@
 import { AgentRunner } from './agent-runner'
-import {
-  type CronJobStoreRecord,
-  type CronSkillStoreRecord,
-  type PendingSystemEvent,
-} from './cron-db-access'
-import type { CronDbAccess } from './cron-db-access'
+import type { CronDbAccess, CronJobStoreRecord, CronSkillStoreRecord, PendingSystemEvent } from './cron-db-access'
 import { SessionStore } from './session-store'
 import type { ToolProxy } from './tool-proxy'
 
@@ -220,7 +215,9 @@ export class HeartbeatManager {
     const skills = await this.config.cronDb.listCronSkills()
     const skillById = new Map(skills.map((skill) => [skill.id, skill]))
     const allJobs = await this.config.cronDb.listCronJobs()
-    const dueJobs = params.forceJobId ? allJobs.filter((job) => job.id === params.forceJobId) : await this.config.cronDb.getDueJobs(params.now)
+    const dueJobs = params.forceJobId
+      ? allJobs.filter((job) => job.id === params.forceJobId)
+      : await this.config.cronDb.getDueJobs(params.now)
 
     for (const job of dueJobs) {
       const startedAt = Date.now()
