@@ -605,13 +605,25 @@ function executeJsTool(args) {
 }
 
 // ── Python execution (Phase 5) ───────────────────────────────────────────
-// Pyodide requires WebAssembly which is disabled in Capacitor-NodeJS v18.
-// Stub it out — execute_python returns a clear error message.
 
-// import { loadPyodide } from 'pyodide';  // DISABLED: requires WebAssembly
+import { loadPyodide } from 'pyodide';
+
+let pyodideInstance = null;
 
 async function getPyodide() {
-  throw new Error('Python execution is unavailable: WebAssembly is disabled in this Node.js runtime.');
+  if (!pyodideInstance) {
+    pyodideInstance = await loadPyodide();
+    // Block dangerous modules for sandbox security
+    pyodideInstance.runPython(`
+import sys
+for _mod in ['subprocess', 'socket', 'http', 'urllib', 'ftplib', 'smtplib',
+             'webbrowser', 'ctypes', 'multiprocessing', 'shutil', 'tempfile',
+             'signal', 'resource']:
+    sys.modules[_mod] = None
+del _mod
+`);
+  }
+  return pyodideInstance;
 }
 
 async function executePythonTool(args) {
@@ -648,6 +660,7 @@ async function executePythonTool(args) {
 // ── Git tools (Phase 3) ──────────────────────────────────────────────────
 
 import git from 'isomorphic-git';
+
 
 async function gitInitTool(args) {
   const WORKSPACE = resolve(join(OPENCLAW_ROOT, 'workspace'));

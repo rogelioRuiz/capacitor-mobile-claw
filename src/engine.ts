@@ -403,6 +403,17 @@ export class MobileClawEngine {
   // ── Bridge communication ───────────────────────────────────────────────
 
   async send(message: Record<string, unknown>): Promise<void> {
+    // WebView agent: intercept tool.pre_execute.result and route locally
+    if (this._useWebViewAgent && message.type === 'tool.pre_execute.result') {
+      const { toolCallId, args, deny, denyReason } = message as any
+      return this.respondToPreExecute(
+        toolCallId,
+        args ?? {},
+        deny as boolean | undefined,
+        denyReason as string | undefined,
+      )
+    }
+
     if (!this.nodePlugin) {
       console.warn('[MobileClaw] Cannot send — plugin not loaded')
       return
