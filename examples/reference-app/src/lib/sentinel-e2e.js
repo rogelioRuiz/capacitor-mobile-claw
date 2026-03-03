@@ -433,7 +433,7 @@ export async function runSentinelE2E() {
     const engine = window.__mobileClaw
     const skill = await engine.addSkill({
       name: 'e2e-skill',
-      allowedTools: ['Read', 'Write'],
+      allowedTools: ['read_file', 'write_file'],
       maxTurns: 2,
       timeoutMs: 30000,
     })
@@ -987,7 +987,7 @@ export async function runSentinelE2E() {
     // Create a skill with specific constraints
     const skill = await engine.addSkill({
       name: 'e2e-mock-skill',
-      allowedTools: ['Read'],
+      allowedTools: ['read_file'],
       systemPrompt: 'You are a disk monitor. Only read files.',
       model: 'claude-sonnet-4-5',
       maxTurns: 1,
@@ -1034,10 +1034,10 @@ export async function runSentinelE2E() {
       // Verify tools were filtered by allowedTools
       if (cronCall.tools) {
         assertTruthy(
-          'tools filtered — Read present',
-          cronCall.tools.includes('Read'),
+          'tools filtered — read_file present',
+          cronCall.tools.includes('read_file'),
         )
-        // With allowedTools: ['Read'], should have very few tools
+        // With allowedTools: ['read_file'], should have very few tools
         assertTruthy(
           `tools filtered — got ${cronCall.tools.length} tool(s)`,
           cronCall.tools.length <= 3,

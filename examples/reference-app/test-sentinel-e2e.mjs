@@ -88,8 +88,33 @@ function httpGetJSON(url) {
   });
 }
 
-const pid = execSync(`${ADB} shell pidof ${APP_PKG}`, { encoding: 'utf-8' }).trim();
-if (!pid) { console.error(`${APP_PKG} not running`); process.exit(1); }
+// Auto-launch app if not running
+let pid;
+try {
+  pid = execSync(`${ADB} shell pidof ${APP_PKG}`, { encoding: 'utf-8' }).trim();
+} catch {
+  pid = '';
+}
+if (!pid) {
+  console.log(`${APP_PKG} not running — launching...`);
+  // Inject setup gate bypass
+  try {
+    const setupXml = `<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n<map>\n    <string name="shell-setup-complete">true</string>\n</map>`;
+    execSync(`${ADB} shell "run-as ${APP_PKG} mkdir -p /data/data/${APP_PKG}/shared_prefs"`, { encoding: 'utf-8' });
+    execSync(`echo '${setupXml}' | ${ADB} shell "run-as ${APP_PKG} sh -c 'cat > /data/data/${APP_PKG}/shared_prefs/CapacitorStorage.xml'"`, { encoding: 'utf-8', shell: true });
+  } catch (e) { console.log('  (setup gate bypass skipped:', e.message, ')'); }
+  execSync(`${ADB} shell am start -n ${APP_PKG}/.MainActivity`, { encoding: 'utf-8' });
+  // Wait for app to start
+  for (let i = 0; i < 10; i++) {
+    await new Promise(r => setTimeout(r, 1000));
+    try {
+      pid = execSync(`${ADB} shell pidof ${APP_PKG}`, { encoding: 'utf-8' }).trim();
+      if (pid) break;
+    } catch {}
+  }
+  if (!pid) { console.error(`Failed to launch ${APP_PKG}`); process.exit(1); }
+  console.log(`  App launched (PID ${pid})`);
+}
 execSync(`${ADB} forward tcp:${CDP_PORT} localabstract:webview_devtools_remote_${pid}`);
 await new Promise(r => setTimeout(r, 800));
 
@@ -377,7 +402,7 @@ await section('8. Heartbeat Disabled → Non-Manual Wake Skipped', async () => {
 await section('9. Skills CRUD', async () => {
   const skill = await evalJSON(`await window.__mobileClaw.addSkill({
     name: 'e2e-skill',
-    allowedTools: ['Read', 'Write'],
+    allowedTools: ['read_file', 'write_file'],
     maxTurns: 2,
     timeoutMs: 30000
   })`);
@@ -908,7 +933,7 @@ await section('23c. Mocked Heartbeat → Non-OK Response + Notification', async 
 await section('23d. Mocked Cron Job → Skill Constraints Wiring', async () => {
   const skill = await evalJSON(`await window.__mobileClaw.addSkill({
     name: 'e2e-mock-skill',
-    allowedTools: ['Read'],
+    allowedTools: ['read_file'],
     systemPrompt: 'You are a disk monitor. Only read files.',
     model: 'claude-sonnet-4-5',
     maxTurns: 1,
@@ -956,7 +981,7 @@ await section('23d. Mocked Cron Job → Skill Constraints Wiring', async () => {
     assertTruthy('skill systemPrompt used', sysPrompt?.includes('disk monitor'));
 
     if (cronCall.tools) {
-      assertTruthy('tools filtered — Read present', cronCall.tools.includes('Read'));
+      assertTruthy('tools filtered — read_file present', cronCall.tools.includes('read_file'));
       assertTruthy(`tools filtered — got ${cronCall.tools.length} tool(s)`, cronCall.tools.length <= 3);
     }
   }

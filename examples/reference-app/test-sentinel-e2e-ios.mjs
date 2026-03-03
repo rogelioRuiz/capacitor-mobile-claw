@@ -233,6 +233,11 @@ async function main() {
   let server, donePromise
   try {
     ;({ server, donePromise } = await startServer())
+    // Ensure server is closed on exit/SIGINT to prevent EADDRINUSE on re-run
+    const cleanup = () => { try { server.close() } catch {} }
+    process.on('SIGINT', () => { cleanup(); process.exit(130) })
+    process.on('SIGTERM', () => { cleanup(); process.exit(143) })
+    process.on('exit', cleanup)
     pass('HTTP result server started', `port ${RUNNER_PORT}`)
   } catch (err) {
     fail('HTTP result server started', err.message)
