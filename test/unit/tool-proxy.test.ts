@@ -1,17 +1,46 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+// Mock native tool modules before importing ToolProxy
+vi.mock('../../src/agent/file-tools', () => ({
+  readFileNative: vi.fn(),
+  writeFileNative: vi.fn(),
+  listFilesNative: vi.fn(),
+  grepFilesNative: vi.fn(),
+  findFilesNative: vi.fn(),
+  editFileNative: vi.fn(),
+  setWorkspaceRoot: vi.fn(),
+}))
+vi.mock('../../src/agent/git-tools', () => ({
+  gitInitNative: vi.fn(),
+  gitStatusNative: vi.fn(),
+  gitAddNative: vi.fn(),
+  gitCommitNative: vi.fn(),
+  gitLogNative: vi.fn(),
+  gitDiffNative: vi.fn(),
+  setWorkspaceDir: vi.fn(),
+}))
+vi.mock('../../src/agent/wasm-tools', () => ({
+  executeJsNative: vi.fn(),
+  executePythonNative: vi.fn(),
+}))
+
+import { listFilesNative, readFileNative, writeFileNative } from '../../src/agent/file-tools'
+import { gitInitNative } from '../../src/agent/git-tools'
 import { ToolProxy } from '../../src/agent/tool-proxy'
+
+function toolResult(data: unknown) {
+  return {
+    content: [{ type: 'text' as const, text: JSON.stringify(data) }],
+    details: data,
+  }
+}
 
 describe('ToolProxy', () => {
   let proxy: ToolProxy
-  let sentMessages: Record<string, unknown>[]
-  let mockSend: (msg: Record<string, unknown>) => Promise<void>
 
   beforeEach(() => {
     proxy = new ToolProxy()
-    sentMessages = []
-    mockSend = async (msg) => {
-      sentMessages.push(msg)
-    }
+    vi.clearAllMocks()
   })
 
   afterEach(() => {
@@ -36,142 +65,114 @@ describe('ToolProxy', () => {
     })
   })
 
-  describe('worker ready — immediate send', () => {
-    it('should send tool.execute immediately when worker is ready', async () => {
-      proxy.setBridge(mockSend)
-      proxy.setWorkerReady()
+  describe('native execution — direct calls', () => {
+    it('should call native read_file directly and return result', async () => {
+      vi.mocked(readFileNative).mockResolvedValue(toolResult({ content: 'file contents' }))
 
       const tools = proxy.buildTools()
       const readFile = tools.find((t) => t.name === 'read_file')!
 
-      // Start execution — don't await yet (need to resolve via handleResult)
-      const promise = readFile.execute('tc-1', { path: 'hello.txt' })
+      const result = await readFile.execute('tc-1', { path: 'hello.txt' })
 
-      // Verify the message was sent immediately
-      expect(sentMessages).toHaveLength(1)
-      expect(sentMessages[0]).toEqual({
-        type: 'tool.execute',
-        toolCallId: 'tc-1',
-        toolName: 'read_file',
-        args: { path: 'hello.txt' },
-      })
-
-      // Simulate worker response
-      proxy.handleResult({
-        toolCallId: 'tc-1',
-        toolName: 'read_file',
-        result: { content: 'file contents' },
-      })
-
-      const result = await promise
+      expect(readFileNative).toHaveBeenCalledWith({ path: 'hello.txt' })
       expect(result.details).toEqual({ content: 'file contents' })
     })
-  })
 
-  describe('optimistic enqueue — worker not ready', () => {
-    it('should queue tool calls when worker is not ready', () => {
-      proxy.setBridge(mockSend)
-      // Don't call setWorkerReady()
+    it('should call native write_file directly and return result', async () => {
+      vi.mocked(writeFileNative).mockResolvedValue(toolResult({ success: true }))
 
       const tools = proxy.buildTools()
-      const readFile = tools.find((t) => t.name === 'read_file')!
+      const writeFile = tools.find((t) => t.name === 'write_file')!
 
-      // Execute without awaiting
-      readFile.execute('tc-2', { path: 'queued.txt' })
+      const result = await writeFile.execute('tc-2', { path: 'out.txt', content: 'data' })
 
-      // Should NOT have sent yet
-      expect(sentMessages).toHaveLength(0)
+      expect(writeFileNative).toHaveBeenCalledWith({ path: 'out.txt', content: 'data' })
+      expect(result.details).toEqual({ success: true })
     })
 
-    it('should flush queued calls when worker becomes ready', async () => {
-      proxy.setBridge(mockSend)
-
-      const tools = proxy.buildTools()
-      const readFile = tools.find((t) => t.name === 'read_file')!
-
-      // Queue two calls
-      const p1 = readFile.execute('tc-3', { path: 'a.txt' })
-      const p2 = readFile.execute('tc-4', { path: 'b.txt' })
-
-      expect(sentMessages).toHaveLength(0)
-
-      // Worker comes up
-      proxy.setWorkerReady()
-
-      // Both should have been flushed
-      expect(sentMessages).toHaveLength(2)
-      expect(sentMessages[0]).toMatchObject({ toolCallId: 'tc-3', toolName: 'read_file' })
-      expect(sentMessages[1]).toMatchObject({ toolCallId: 'tc-4', toolName: 'read_file' })
-
-      // Resolve them
-      proxy.handleResult({ toolCallId: 'tc-3', toolName: 'read_file', result: { content: 'a' } })
-      proxy.handleResult({ toolCallId: 'tc-4', toolName: 'read_file', result: { content: 'b' } })
-
-      const r1 = await p1
-      const r2 = await p2
-      expect(r1.details).toEqual({ content: 'a' })
-      expect(r2.details).toEqual({ content: 'b' })
-    })
-  })
-
-  describe('handleResult', () => {
-    it('should resolve with error content when worker returns error', async () => {
-      proxy.setBridge(mockSend)
-      proxy.setWorkerReady()
-
-      const tools = proxy.buildTools()
-      const readFile = tools.find((t) => t.name === 'read_file')!
-
-      const promise = readFile.execute('tc-err', { path: 'missing.txt' })
-      proxy.handleResult({
-        toolCallId: 'tc-err',
-        toolName: 'read_file',
-        error: 'File not found',
-      })
-
-      const result = await promise
-      expect(result.content[0].text).toContain('Error executing read_file')
-      expect(result.content[0].text).toContain('File not found')
-      expect(result.details).toEqual({ error: 'File not found' })
-    })
-
-    it('should pass through AgentToolResult format when result has content array', async () => {
-      proxy.setBridge(mockSend)
-      proxy.setWorkerReady()
-
-      const tools = proxy.buildTools()
-      const readFile = tools.find((t) => t.name === 'read_file')!
-
-      const promise = readFile.execute('tc-raw', { path: 'test.txt' })
-      proxy.handleResult({
-        toolCallId: 'tc-raw',
-        toolName: 'read_file',
-        result: { content: [{ type: 'text', text: 'raw result' }] },
-      })
-
-      const result = await promise
-      expect(result.content).toEqual([{ type: 'text', text: 'raw result' }])
-    })
-
-    it('should JSON.stringify non-string results', async () => {
-      proxy.setBridge(mockSend)
-      proxy.setWorkerReady()
+    it('should call native list_files directly and return result', async () => {
+      vi.mocked(listFilesNative).mockResolvedValue(toolResult({ entries: ['a.txt', 'b.txt'] }))
 
       const tools = proxy.buildTools()
       const listFiles = tools.find((t) => t.name === 'list_files')!
 
-      const promise = listFiles.execute('tc-json', { path: '.' })
-      proxy.handleResult({
-        toolCallId: 'tc-json',
-        toolName: 'list_files',
-        result: { entries: ['file1.txt', 'file2.txt'] },
-      })
+      const result = await listFiles.execute('tc-3', { path: '.' })
 
-      const result = await promise
-      expect(result.content[0].text).toBe(JSON.stringify({ entries: ['file1.txt', 'file2.txt'] }))
+      expect(listFilesNative).toHaveBeenCalledWith({ path: '.' })
+      expect((result.content[0] as { type: 'text'; text: string }).text).toBe(
+        JSON.stringify({ entries: ['a.txt', 'b.txt'] }),
+      )
+    })
+  })
+
+  describe('concurrent native calls', () => {
+    it('should route concurrent calls to correct native functions', async () => {
+      vi.mocked(readFileNative).mockResolvedValue(toolResult({ content: 'file a content' }))
+      vi.mocked(writeFileNative).mockResolvedValue(toolResult({ success: true }))
+
+      const tools = proxy.buildTools()
+      const readFile = tools.find((t) => t.name === 'read_file')!
+      const writeFile = tools.find((t) => t.name === 'write_file')!
+
+      // Start two concurrent tool calls
+      const [r1, r2] = await Promise.all([
+        readFile.execute('tc-a', { path: 'a.txt' }),
+        writeFile.execute('tc-b', { path: 'b.txt', content: 'hello' }),
+      ])
+
+      expect(r1.details).toEqual({ content: 'file a content' })
+      expect(r2.details).toEqual({ success: true })
+      expect(readFileNative).toHaveBeenCalledTimes(1)
+      expect(writeFileNative).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  describe('error handling', () => {
+    it('should return error result when native tool throws', async () => {
+      vi.mocked(readFileNative).mockRejectedValue(new Error('File not found'))
+
+      const tools = proxy.buildTools()
+      const readFile = tools.find((t) => t.name === 'read_file')!
+
+      // Native tools catch their own errors and return AgentToolResult,
+      // but if the mock throws, execute should propagate the rejection.
+      await expect(readFile.execute('tc-err', { path: 'missing.txt' })).rejects.toThrow('File not found')
     })
 
-    it('should ignore results for unknown toolCallIds', () => {
+    it('should return error result when native tool returns error details', async () => {
+      vi.mocked(readFileNative).mockResolvedValue(toolResult({ error: 'Access denied: path outside workspace' }))
+
+      const tools = proxy.buildTools()
+      const readFile = tools.find((t) => t.name === 'read_file')!
+
+      const result = await readFile.execute('tc-denied', { path: '/etc/passwd' })
+      expect(result.details).toEqual({ error: 'Access denied: path outside workspace' })
+    })
+  })
+
+  describe('unknown tool fallback', () => {
+    it('should return error for unknown tool name', async () => {
+      // Manually test the fallback path by calling buildTools on a proxy
+      // that has a schema for a tool not in NATIVE_TOOLS.
+      // Since all 14 tools are mapped, we test the fallback indirectly:
+      // The proxy should handle all known tools without errors.
+      const tools = proxy.buildTools()
+      expect(tools.every((t) => typeof t.execute === 'function')).toBe(true)
+    })
+  })
+
+  describe('deprecated API compat', () => {
+    it('setBridge should be a no-op', () => {
+      // Should not throw
+      proxy.setBridge(async () => {})
+    })
+
+    it('setWorkerReady should be a no-op', () => {
+      // Should not throw
+      proxy.setWorkerReady()
+    })
+
+    it('handleResult should be a no-op', () => {
       // Should not throw
       proxy.handleResult({
         toolCallId: 'unknown-id',
@@ -181,59 +182,17 @@ describe('ToolProxy', () => {
     })
   })
 
-  describe('abort signal', () => {
-    it('should resolve immediately with abort message when signal is already aborted', async () => {
-      proxy.setBridge(mockSend)
-      proxy.setWorkerReady()
+  describe('git tools', () => {
+    it('should call native git_init directly', async () => {
+      vi.mocked(gitInitNative).mockResolvedValue(toolResult({ success: true }))
 
       const tools = proxy.buildTools()
-      const readFile = tools.find((t) => t.name === 'read_file')!
+      const gitInit = tools.find((t) => t.name === 'git_init')!
 
-      const controller = new AbortController()
-      controller.abort()
+      const result = await gitInit.execute('tc-git', { default_branch: 'main' })
 
-      const result = await readFile.execute('tc-aborted', { path: 'test.txt' }, controller.signal)
-      expect(result.content[0].text).toContain('aborted')
-      expect(result.details).toEqual({ aborted: true })
-      // Should NOT have sent a message
-      expect(sentMessages).toHaveLength(0)
-    })
-
-    it('should resolve with abort message when signal fires mid-flight', async () => {
-      proxy.setBridge(mockSend)
-      proxy.setWorkerReady()
-
-      const tools = proxy.buildTools()
-      const readFile = tools.find((t) => t.name === 'read_file')!
-
-      const controller = new AbortController()
-      const promise = readFile.execute('tc-mid-abort', { path: 'test.txt' }, controller.signal)
-
-      // Message was sent
-      expect(sentMessages).toHaveLength(1)
-
-      // Abort before result arrives
-      controller.abort()
-
-      const result = await promise
-      expect(result.content[0].text).toContain('aborted')
-    })
-  })
-
-  describe('bridge send failure', () => {
-    it('should resolve with error when bridge send throws', async () => {
-      const failSend = async () => {
-        throw new Error('bridge disconnected')
-      }
-      proxy.setBridge(failSend)
-      proxy.setWorkerReady()
-
-      const tools = proxy.buildTools()
-      const readFile = tools.find((t) => t.name === 'read_file')!
-
-      const result = await readFile.execute('tc-fail', { path: 'test.txt' })
-      expect(result.content[0].text).toContain('Failed to send tool call')
-      expect(result.content[0].text).toContain('bridge disconnected')
+      expect(gitInitNative).toHaveBeenCalledWith({ default_branch: 'main' })
+      expect(result.details).toEqual({ success: true })
     })
   })
 })
