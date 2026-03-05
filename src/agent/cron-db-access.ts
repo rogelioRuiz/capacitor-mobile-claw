@@ -80,6 +80,46 @@ export class CronDbAccess {
     }
   }
 
+  async setSchedulerConfig(patch: Record<string, unknown> = {}): Promise<SchedulerStoreConfig> {
+    await this.ensureReady()
+    await this.getSchedulerConfig()
+
+    const sets: string[] = []
+    const params: unknown[] = []
+
+    if (patch.enabled !== undefined) {
+      sets.push('enabled = ?')
+      params.push(_toIntBool(Boolean(patch.enabled)))
+    }
+    if (patch.schedulingMode !== undefined || patch.scheduling_mode !== undefined) {
+      sets.push('scheduling_mode = ?')
+      params.push((patch.schedulingMode ?? patch.scheduling_mode) || 'balanced')
+    }
+    if (patch.runOnCharging !== undefined || patch.run_on_charging !== undefined) {
+      sets.push('run_on_charging = ?')
+      params.push(_toIntBool(Boolean(patch.runOnCharging ?? patch.run_on_charging)))
+    }
+
+    const globalActiveHours = (patch.globalActiveHours || patch.global_active_hours) as
+      | { start?: string; end?: string; tz?: string; timezone?: string }
+      | undefined
+    if (globalActiveHours) {
+      sets.push('global_active_hours_start = ?')
+      params.push(globalActiveHours.start || null)
+      sets.push('global_active_hours_end = ?')
+      params.push(globalActiveHours.end || null)
+      sets.push('global_active_hours_tz = ?')
+      params.push(globalActiveHours.tz || globalActiveHours.timezone || null)
+    }
+
+    sets.push('updated_at = ?')
+    params.push(Date.now())
+    params.push(1)
+
+    await this._run(`UPDATE scheduler_config SET ${sets.join(', ')} WHERE id = ?`, params)
+    return this.getSchedulerConfig()
+  }
+
   async getHeartbeatConfig(): Promise<HeartbeatStoreConfig> {
     await this.ensureReady()
     await this._run(
@@ -172,6 +212,91 @@ export class CronDbAccess {
     return this.getHeartbeatConfig()
   }
 
+  async addCronSkill(skill: {
+    id?: string
+    name: string
+    allowedTools?: string[]
+    systemPrompt?: string
+    model?: string
+    maxTurns?: number
+    timeoutMs?: number
+  }): Promise<CronSkillStoreRecord> {
+    await this.ensureReady()
+    const now = Date.now()
+    const id = skill.id || `skill_${now}_${Math.random().toString(36).slice(2, 8)}`
+    await this._run(
+      `INSERT INTO cron_skills
+       (id, name, allowed_tools, system_prompt, model, max_turns, timeout_ms, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        skill.name,
+        skill.allowedTools == null ? null : JSON.stringify(skill.allowedTools),
+        skill.systemPrompt || null,
+        skill.model || null,
+        Number(skill.maxTurns ?? 3),
+        Number(skill.timeoutMs ?? 60_000),
+        now,
+        now,
+      ],
+    )
+    const row = await this._queryOne('SELECT * FROM cron_skills WHERE id = ?', [id])
+    return {
+      id: row.id,
+      name: row.name,
+      allowedTools: _parseJsonArray(row.allowed_tools),
+      systemPrompt: row.system_prompt || undefined,
+      model: row.model || undefined,
+      maxTurns: row.max_turns ?? 3,
+      timeoutMs: row.timeout_ms ?? 60_000,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    }
+  }
+
+  async updateCronSkill(id: string, patch: Record<string, unknown> = {}): Promise<void> {
+    await this.ensureReady()
+    const sets: string[] = []
+    const params: unknown[] = []
+
+    if (patch.name !== undefined) {
+      sets.push('name = ?')
+      params.push(patch.name)
+    }
+    if (patch.allowedTools !== undefined || patch.allowed_tools !== undefined) {
+      const value = patch.allowedTools ?? patch.allowed_tools
+      sets.push('allowed_tools = ?')
+      params.push(value == null ? null : JSON.stringify(value))
+    }
+    if (patch.systemPrompt !== undefined || patch.system_prompt !== undefined) {
+      sets.push('system_prompt = ?')
+      params.push((patch.systemPrompt ?? patch.system_prompt) || null)
+    }
+    if (patch.model !== undefined) {
+      sets.push('model = ?')
+      params.push(patch.model || null)
+    }
+    if (patch.maxTurns !== undefined || patch.max_turns !== undefined) {
+      sets.push('max_turns = ?')
+      params.push(Number(patch.maxTurns ?? patch.max_turns ?? 3))
+    }
+    if (patch.timeoutMs !== undefined || patch.timeout_ms !== undefined) {
+      sets.push('timeout_ms = ?')
+      params.push(Number(patch.timeoutMs ?? patch.timeout_ms ?? 60_000))
+    }
+
+    sets.push('updated_at = ?')
+    params.push(Date.now())
+    params.push(id)
+
+    await this._run(`UPDATE cron_skills SET ${sets.join(', ')} WHERE id = ?`, params)
+  }
+
+  async removeCronSkill(id: string): Promise<void> {
+    await this.ensureReady()
+    await this._run('DELETE FROM cron_skills WHERE id = ?', [id])
+  }
+
   async listCronSkills(): Promise<CronSkillStoreRecord[]> {
     await this.ensureReady()
     const result = await this.db.query('SELECT * FROM cron_skills ORDER BY updated_at DESC')
@@ -186,6 +311,82 @@ export class CronDbAccess {
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     }))
+  }
+
+  async addCronJob(job: {
+    id?: string
+    name: string
+    enabled?: boolean
+    sessionTarget?: string
+    wakeMode?: string
+    schedule?: { kind?: string; everyMs?: number; anchorMs?: number; atMs?: number }
+    skillId?: string
+    prompt?: string
+    deliveryMode?: string
+    deliveryWebhookUrl?: string
+    deliveryNotificationTitle?: string
+    activeHours?: { start?: string; end?: string; tz?: string; timezone?: string }
+    nextRunAt?: number | null
+  }): Promise<CronJobStoreRecord> {
+    await this.ensureReady()
+    const now = Date.now()
+    const id = job.id || `job_${now}_${Math.random().toString(36).slice(2, 8)}`
+    const schedule = job.schedule || {}
+    const activeHours = job.activeHours || {}
+    let nextRunAt: number | null = job.nextRunAt ?? null
+    if (nextRunAt === null || nextRunAt === undefined) {
+      if (schedule.kind === 'at') nextRunAt = Number(schedule.atMs) || null
+      else if (schedule.kind === 'every') {
+        const everyMs = Number(schedule.everyMs) || 0
+        nextRunAt = everyMs > 0 ? now + everyMs : null
+      }
+    }
+    await this._run(
+      `INSERT INTO cron_jobs
+       (id, name, enabled, session_target, wake_mode, schedule_kind, schedule_every_ms, schedule_anchor_ms, schedule_at_ms,
+        skill_id, prompt, delivery_mode, delivery_webhook_url, delivery_notification_title,
+        active_hours_start, active_hours_end, active_hours_tz,
+        last_run_at, next_run_at, last_run_status, last_error, last_duration_ms,
+        last_response_hash, last_response_sent_at, consecutive_errors, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        job.name,
+        _toIntBool(job.enabled !== false),
+        job.sessionTarget || 'isolated',
+        job.wakeMode || 'next-heartbeat',
+        schedule.kind ?? null,
+        schedule.kind === 'every' ? Number(schedule.everyMs) || null : null,
+        Number(schedule.anchorMs) || null,
+        schedule.kind === 'at' ? Number(schedule.atMs) || null : null,
+        job.skillId || null,
+        job.prompt || '',
+        job.deliveryMode || 'notification',
+        job.deliveryWebhookUrl || null,
+        job.deliveryNotificationTitle || null,
+        activeHours.start || null,
+        activeHours.end || null,
+        activeHours.tz || activeHours.timezone || null,
+        null,
+        nextRunAt,
+        null,
+        null,
+        null,
+        null,
+        null,
+        0,
+        now,
+        now,
+      ],
+    )
+    const row = await this._queryOne('SELECT * FROM cron_jobs WHERE id = ?', [id])
+    return _toCronJobRecord(row)
+  }
+
+  async removeCronJob(id: string): Promise<void> {
+    await this.ensureReady()
+    await this._run('DELETE FROM cron_jobs WHERE id = ?', [id])
+    await this._run('DELETE FROM cron_runs WHERE job_id = ?', [id])
   }
 
   async listCronJobs(): Promise<CronJobStoreRecord[]> {

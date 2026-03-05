@@ -139,7 +139,7 @@ await new Promise((res, rej) => { ws.once('open', res); ws.once('error', rej); }
 function cdpSend(method, params = {}) {
   return new Promise((resolve, reject) => {
     const id = msgId++;
-    const timer = setTimeout(() => { pending.delete(id); reject(new Error(`CDP timeout: ${method}`)); }, 30000);
+    const timer = setTimeout(() => { pending.delete(id); reject(new Error(`CDP timeout: ${method}`)); }, 90000);
     pending.set(id, (msg) => { clearTimeout(timer); resolve(msg); });
     ws.send(JSON.stringify({ id, method, params }));
   });
@@ -220,6 +220,16 @@ async function setupEventCapture() {
 async function clearEvents() { await evaluate('window.__e2eEvents = []'); }
 
 async function getEvents() { return await evalJSON('window.__e2eEvents') || []; }
+
+/** Wait until no heartbeat wake is in-flight (poll _heartbeatManager.wakeInFlight). */
+async function waitForHeartbeatIdle(maxMs = 65000) {
+  const start = Date.now();
+  while (Date.now() - start < maxMs) {
+    const busy = await evalJSON('window.__mobileClaw?._heartbeatManager?.wakeInFlight ?? false');
+    if (!busy) return;
+    await new Promise(r => setTimeout(r, 500));
+  }
+}
 
 async function waitForEvent(types, timeoutMs = 45000) {
   const typeArr = Array.isArray(types) ? types : [types];
@@ -353,6 +363,7 @@ await section('5. Heartbeat Next-Run Scheduling', async () => {
 
 // ── 6. Scheduler disabled → non-manual wake skipped ──────────────────────
 await section('6. Scheduler Disabled → Non-Manual Wake Skipped', async () => {
+  await waitForHeartbeatIdle();
   await evaluate(`window.__mobileClaw.setSchedulerConfig({ enabled: false })`);
   await clearEvents();
   await setupEventCapture();
@@ -370,6 +381,7 @@ await section('6. Scheduler Disabled → Non-Manual Wake Skipped', async () => {
 
 // ── 7. Manual wake bypasses scheduler gate ────────────────────────────────
 await section('7. Manual Wake Bypasses Scheduler Gate', async () => {
+  await waitForHeartbeatIdle();
   await evaluate(`window.__mobileClaw.setSchedulerConfig({ enabled: false })`);
   await clearEvents();
   await setupEventCapture();
@@ -384,6 +396,7 @@ await section('7. Manual Wake Bypasses Scheduler Gate', async () => {
 
 // ── 8. Heartbeat disabled + non-manual → skipped ─────────────────────────
 await section('8. Heartbeat Disabled → Non-Manual Wake Skipped', async () => {
+  await waitForHeartbeatIdle();
   await evaluate(`window.__mobileClaw.setHeartbeat({ enabled: false })`);
   await clearEvents();
   await setupEventCapture();

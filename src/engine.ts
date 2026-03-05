@@ -600,8 +600,9 @@ export class MobileClawEngine {
 
   // ── Scheduler / heartbeat / cron ─────────────────────────────────────
 
-  async setSchedulerConfig(_config: Partial<SchedulerConfig>): Promise<void> {
-    // TODO: CronDbAccess doesn't have a setSchedulerConfig yet — add when needed
+  async setSchedulerConfig(config: Partial<SchedulerConfig>): Promise<void> {
+    if (!this._cronDb) return
+    await this._cronDb.setSchedulerConfig(config as Record<string, unknown>)
   }
 
   async getSchedulerConfig(): Promise<{ scheduler: SchedulerConfig; heartbeat: HeartbeatConfig }> {
@@ -628,9 +629,9 @@ export class MobileClawEngine {
     }
   }
 
-  async addCronJob(_job: CronJobInput): Promise<CronJobRecord> {
-    // TODO: CronDbAccess doesn't have addJob yet — add when needed
-    throw new Error('addCronJob not yet implemented without worker')
+  async addCronJob(job: CronJobInput): Promise<CronJobRecord> {
+    if (!this._cronDb) throw new Error('CronDb not initialized')
+    return this._cronDb.addCronJob(job) as Promise<CronJobRecord>
   }
 
   async updateCronJob(id: string, patch: Partial<CronJobInput>): Promise<void> {
@@ -638,9 +639,9 @@ export class MobileClawEngine {
     await this._cronDb.updateCronJob(id, patch as Record<string, unknown>)
   }
 
-  async removeCronJob(_id: string): Promise<void> {
-    // TODO: CronDbAccess doesn't have removeJob yet — add when needed
-    throw new Error('removeCronJob not yet implemented without worker')
+  async removeCronJob(id: string): Promise<void> {
+    if (!this._cronDb) throw new Error('CronDb not initialized')
+    await this._cronDb.removeCronJob(id)
   }
 
   async listCronJobs(): Promise<CronJobRecord[]> {
@@ -659,19 +660,19 @@ export class MobileClawEngine {
     return []
   }
 
-  async addSkill(_skill: CronSkillInput): Promise<CronSkillRecord> {
-    // TODO: CronDbAccess doesn't have addSkill yet — add when needed
-    throw new Error('addSkill not yet implemented without worker')
+  async addSkill(skill: CronSkillInput): Promise<CronSkillRecord> {
+    if (!this._cronDb) throw new Error('CronDb not initialized')
+    return this._cronDb.addCronSkill(skill)
   }
 
-  async updateSkill(_id: string, _patch: Partial<CronSkillInput>): Promise<void> {
-    // TODO: CronDbAccess doesn't have updateSkill yet — add when needed
-    throw new Error('updateSkill not yet implemented without worker')
+  async updateSkill(id: string, patch: Partial<CronSkillInput>): Promise<void> {
+    if (!this._cronDb) throw new Error('CronDb not initialized')
+    await this._cronDb.updateCronSkill(id, patch as Record<string, unknown>)
   }
 
-  async removeSkill(_id: string): Promise<void> {
-    // TODO: CronDbAccess doesn't have removeSkill yet — add when needed
-    throw new Error('removeSkill not yet implemented without worker')
+  async removeSkill(id: string): Promise<void> {
+    if (!this._cronDb) throw new Error('CronDb not initialized')
+    await this._cronDb.removeCronSkill(id)
   }
 
   async listSkills(): Promise<CronSkillRecord[]> {
