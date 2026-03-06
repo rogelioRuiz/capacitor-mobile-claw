@@ -178,8 +178,8 @@ async function loadSessionHistory(sessionKey, agentId = 'main') {
   return engine.loadSessionHistory(sessionKey, agentId)
 }
 
-async function resumeSession(sessionKey, agentId = 'main') {
-  return engine.resumeSession(sessionKey, agentId)
+async function resumeSession(sessionKey, agentId = 'main', options = {}) {
+  return engine.resumeSession(sessionKey, agentId, options)
 }
 
 async function invokeTool(toolName, args = {}) {

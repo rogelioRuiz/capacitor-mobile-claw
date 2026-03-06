@@ -116,7 +116,7 @@ import ChatEmptyState from '@/components/chat/ChatEmptyState.vue'
 const {
   workerReady, sendMessage, stopTurn, onMessage,
   clearConversation, getAuthStatus,
-  getLatestSession, loadSessionHistory, resumeSession, setSessionKey,
+  getLatestSession, getModels, loadSessionHistory, resumeSession, setSessionKey,
 } = useMobileClaw()
 
 const messages = ref([])
@@ -128,6 +128,54 @@ const restoringSession = ref(false)
 
 let messageIdCounter = 0
 let cleanupFns = []
+const PROVIDERS = ['anthropic', 'openrouter', 'openai']
+const ACTIVE_MODEL_KEY = 'mobileclaw_active_model'
+
+function readStoredProviderModel() {
+  try {
+    return JSON.parse(localStorage.getItem(ACTIVE_MODEL_KEY) || '{}')
+  } catch {
+    return {}
+  }
+}
+
+function saveProviderModel(provider, model) {
+  localStorage.setItem(ACTIVE_MODEL_KEY, JSON.stringify({ provider, model: model || '' }))
+}
+
+async function getDefaultModel(provider, preferredModel) {
+  try {
+    const result = await getModels(provider)
+    const models = result.models || []
+    if (preferredModel && models.some(m => m.id === preferredModel)) {
+      return preferredModel
+    }
+    const def = models.find(m => m.default) || models[0]
+    return def?.id || ''
+  } catch {
+    return preferredModel || ''
+  }
+}
+
+async function resolveProviderModel() {
+  const stored = readStoredProviderModel()
+  if (stored.provider) {
+    const model = await getDefaultModel(stored.provider, stored.model)
+    saveProviderModel(stored.provider, model)
+    return { provider: stored.provider, model }
+  }
+
+  const results = await Promise.allSettled(PROVIDERS.map(p => getAuthStatus(p)))
+  const firstConfigured = results.find((r) => r.status === 'fulfilled' && r.value?.hasKey)
+  if (!firstConfigured) {
+    return { provider: '', model: '' }
+  }
+
+  const provider = firstConfigured.value.provider
+  const model = await getDefaultModel(provider, '')
+  saveProviderModel(provider, model)
+  return { provider, model }
+}
 
 function generateId() {
   return `msg-${++messageIdCounter}`
@@ -157,11 +205,10 @@ async function handleSend(text) {
   currentStreamingMessage.value = null
 
   try {
-    // Read active provider+model from settings (set by SettingsView)
-    const _m = (() => { try { return JSON.parse(localStorage.getItem('mobileclaw_active_model') || '{}') } catch { return {} } })()
+    const resolved = await resolveProviderModel()
     const sessionKey = await sendMessage(text, 'main', {
-      provider: _m.provider || undefined,
-      model: _m.model || undefined,
+      provider: resolved.provider || undefined,
+      model: resolved.model || undefined,
     })
   } catch (err) {
     isRunning.value = false
@@ -275,7 +322,10 @@ onUnmounted(() => {
 watch(workerReady, async (ready) => {
   if (!ready || messages.value.length > 0) return
   try {
-    const status = await getAuthStatus()
+    const resolved = await resolveProviderModel()
+    if (!resolved.provider) return
+
+    const status = await getAuthStatus(resolved.provider)
     if (!status.hasKey) return
 
     const latest = await getLatestSession()
@@ -313,7 +363,10 @@ watch(workerReady, async (ready) => {
     }
 
     // Resume agent context for follow-ups
-    await resumeSession(latest.sessionKey)
+    await resumeSession(latest.sessionKey, 'main', {
+      provider: resolved.provider,
+      model: latest.model || resolved.model,
+    })
     setSessionKey(latest.sessionKey)
     scrollToBottom()
   } catch { /* non-fatal — just show empty chat */ }

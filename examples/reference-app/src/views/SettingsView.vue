@@ -102,7 +102,7 @@
       <!-- API Key -->
       <SettingsGroup label="API KEY">
         <SettingsRow
-          label="Anthropic API Key"
+          :label="providerApiKeyLabel"
           :subtitle="apiKeyStatus"
           :clickable="true"
           :show-chevron="true"
@@ -511,23 +511,23 @@
         <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" @click="showApiKeyDialog = false" />
         <div class="relative bg-card border border-border/50 rounded-2xl shadow-2xl w-full max-w-sm p-5 space-y-4">
           <div>
-            <h3 class="text-base font-semibold text-foreground">API Key</h3>
-            <p class="text-xs text-muted-foreground mt-1">Enter your Anthropic API key to use the agent.</p>
+            <h3 class="text-base font-semibold text-foreground">{{ providerApiKeyLabel }}</h3>
+            <p class="text-xs text-muted-foreground mt-1">{{ apiKeyDialogDescription }}</p>
           </div>
           <input
             v-model="apiKeyDialogInput"
             type="password"
-            placeholder="sk-ant-api03-..."
+            :placeholder="providerKeyPlaceholder"
             class="w-full px-3 py-2.5 rounded-lg bg-secondary border border-border/50
                    text-sm text-foreground font-mono
                    placeholder:text-muted-foreground/40
                    focus:outline-none focus:ring-2 focus:ring-primary/50"
           />
           <p
-            v-if="apiKeyDialogInput && !apiKeyDialogInput.startsWith('sk-ant-')"
+            v-if="showApiKeyPrefixHint"
             class="text-xs text-amber-400"
           >
-            Anthropic API keys typically start with "sk-ant-"
+            {{ apiKeyPrefixHint }}
           </p>
           <div class="flex gap-2 justify-end">
             <button
@@ -870,6 +870,23 @@ function goBack() {
 
 const PROVIDER_LABELS = { anthropic: 'Claude Max', openrouter: 'OpenRouter', openai: 'OpenAI' }
 const ALL_PROVIDERS = ['anthropic', 'openrouter', 'openai']
+const PROVIDER_KEY_HINTS = {
+  anthropic: {
+    placeholder: 'sk-ant-api03-...',
+    prefix: 'sk-ant-',
+    hint: 'Anthropic API keys typically start with "sk-ant-"',
+  },
+  openrouter: {
+    placeholder: 'sk-or-v1-...',
+    prefix: 'sk-or-v1-',
+    hint: 'OpenRouter API keys typically start with "sk-or-v1-"',
+  },
+  openai: {
+    placeholder: 'sk-...',
+    prefix: 'sk-',
+    hint: 'OpenAI API keys typically start with "sk-"',
+  },
+}
 
 const providerAuthStatus = ref({ anthropic: false, openrouter: false, openai: false })
 const configuredProviders = computed(() => ALL_PROVIDERS.filter(p => providerAuthStatus.value[p]))
@@ -931,16 +948,34 @@ const showApiKeyDialog = ref(false)
 const apiKeyDialogInput = ref('')
 const hasApiKey = ref(false)
 const apiKeyMasked = ref('')
+const providerApiKeyLabel = computed(() => `${PROVIDER_LABELS[activeProvider.value] || 'Provider'} API Key`)
+const providerKeyHint = computed(() => PROVIDER_KEY_HINTS[activeProvider.value] || PROVIDER_KEY_HINTS.openai)
+const providerKeyPlaceholder = computed(() => providerKeyHint.value.placeholder)
+const apiKeyPrefixHint = computed(() => providerKeyHint.value.hint)
+const showApiKeyPrefixHint = computed(() => {
+  const input = apiKeyDialogInput.value
+  const prefix = providerKeyHint.value.prefix
+  return !!input && !!prefix && !input.startsWith(prefix)
+})
+const apiKeyDialogDescription = computed(() => {
+  if (activeProvider.value === 'openrouter') {
+    return 'Enter your OpenRouter API key to use OpenRouter models in chat.'
+  }
+  if (activeProvider.value === 'openai') {
+    return 'Enter your OpenAI API key to use OpenAI models in chat.'
+  }
+  return 'Enter your Claude Max / Anthropic API key to use Anthropic models in chat.'
+})
 
 const apiKeyStatus = computed(() => {
   if (!hasApiKey.value) return 'No API key set'
-  return apiKeyMasked.value || 'sk-ant-***'
+  return apiKeyMasked.value || '***'
 })
 
 async function loadAuthStatus() {
   if (!workerReady.value) return
   try {
-    const status = await getAuthStatus()
+    const status = await getAuthStatus(activeProvider.value)
     hasApiKey.value = status.hasKey
     apiKeyMasked.value = status.masked || ''
   } catch { /* non-fatal */ }
@@ -949,11 +984,12 @@ async function loadAuthStatus() {
 async function saveApiKeyFromDialog() {
   await updateConfig({
     action: 'setApiKey',
-    provider: 'anthropic',
+    provider: activeProvider.value,
     apiKey: apiKeyDialogInput.value.trim(),
   })
   apiKeyDialogInput.value = ''
   showApiKeyDialog.value = false
+  await loadProviderAuthStatus()
   await loadAuthStatus()
 }
 
@@ -1380,4 +1416,9 @@ watch(workerReady, (ready) => {
     loadProviderAuthStatus().then(() => loadModelsForProvider(activeProvider.value)).catch(() => {})
   }
 }, { immediate: true })
+
+watch(activeProvider, () => {
+  apiKeyDialogInput.value = ''
+  loadAuthStatus().catch(() => {})
+})
 </script>

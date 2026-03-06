@@ -13,7 +13,13 @@
 
 import { Capacitor } from '@capacitor/core'
 import { AgentRunner, type PreExecuteResult } from './agent/agent-runner'
-import { getAuthStatus as getAuthStatusNative, getAuthToken, setAuthRoot } from './agent/auth-store'
+import {
+  deleteAuth as deleteAuthNative,
+  getAuthStatus as getAuthStatusNative,
+  getAuthToken,
+  setAuthKey as setAuthKeyNative,
+  setAuthRoot,
+} from './agent/auth-store'
 import { CronDbAccess } from './agent/cron-db-access'
 import { readFileNative, setWorkspaceRoot, writeFileNative } from './agent/file-tools'
 import { setWorkspaceDir } from './agent/git-tools'
@@ -567,8 +573,33 @@ export class MobileClawEngine {
 
   // ── Configuration ──────────────────────────────────────────────────────
 
-  async updateConfig(_config: Record<string, unknown>): Promise<void> {
-    // TODO: persist config changes to openclaw.json
+  async updateConfig(config: Record<string, unknown>): Promise<void> {
+    const action = typeof config.action === 'string' ? config.action : ''
+    const provider =
+      typeof config.provider === 'string' && config.provider.trim() ? config.provider.trim() : 'anthropic'
+
+    if (action === 'setApiKey') {
+      const apiKey = typeof config.apiKey === 'string' ? config.apiKey.trim() : ''
+      if (!apiKey) {
+        throw new Error('Missing apiKey for setApiKey')
+      }
+      await setAuthKeyNative(apiKey, provider, 'main', 'api_key')
+      return
+    }
+
+    if (action === 'setOAuth') {
+      const accessToken = typeof config.accessToken === 'string' ? config.accessToken.trim() : ''
+      if (!accessToken) {
+        throw new Error('Missing accessToken for setOAuth')
+      }
+      await setAuthKeyNative(accessToken, provider, 'main', 'oauth')
+      return
+    }
+
+    if (action === 'deleteAuth' || action === 'clearAuth') {
+      await deleteAuthNative(provider, 'main')
+      return
+    }
   }
 
   async exchangeOAuthCode(tokenUrl: string, body: Record<string, string>, contentType?: string): Promise<any> {
@@ -594,7 +625,6 @@ export class MobileClawEngine {
   }
 
   async setAuthKey(key: string, provider = 'anthropic', type: 'api_key' | 'oauth' = 'api_key'): Promise<void> {
-    const { setAuthKey: setAuthKeyNative } = await import('./agent/auth-store')
     await setAuthKeyNative(key, provider, 'main', type)
   }
 
@@ -714,7 +744,7 @@ export class MobileClawEngine {
   async resumeSession(
     sessionKey: string,
     agentId = 'main',
-    options?: { messages?: import('@mariozechner/pi-agent-core').AgentMessage[] },
+    options?: { messages?: import('@mariozechner/pi-agent-core').AgentMessage[]; provider?: string; model?: string },
   ): Promise<{ success: boolean; error?: string; sessionKey?: string; messageCount?: number }> {
     this._currentSessionKey = sessionKey
 
@@ -723,19 +753,21 @@ export class MobileClawEngine {
     }
 
     try {
-      const [authResult, systemPrompt] = await Promise.all([getAuthToken('anthropic', agentId), loadSystemPrompt()])
+      const provider = options?.provider || 'anthropic'
+      const [authResult, systemPrompt] = await Promise.all([getAuthToken(provider, agentId), loadSystemPrompt()])
 
       if (!authResult.apiKey) {
-        return { success: false, error: 'No API key configured' }
+        return { success: false, error: `No API key configured for provider "${provider}"` }
       }
 
       const messages = options?.messages ?? []
       await this._agentRunner.resume({
         sessionKey,
         messages,
+        model: options?.model,
         systemPrompt,
         apiKey: authResult.apiKey,
-        provider: 'anthropic',
+        provider,
         extraTools: this._extraAgentTools,
       })
 

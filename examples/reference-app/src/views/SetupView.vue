@@ -327,7 +327,7 @@ import { useMobileClaw } from '@/composables/useMobileClaw'
 import { isNative } from '@/lib/platform.js'
 import SettingsGroup from '@/components/settings/SettingsGroup.vue'
 
-const { workerReady, nodeVersion, updateConfig, getAuthStatus, exchangeOAuthCode } = useMobileClaw()
+const { workerReady, nodeVersion, updateConfig, getAuthStatus, getModels, exchangeOAuthCode } = useMobileClaw()
 
 // ── Provider labels ───────────────────────────────────────────────────────
 
@@ -398,6 +398,38 @@ async function loadAllAuthStatus() {
   await Promise.all(['anthropic', 'openrouter', 'openai'].map(p => loadAuthStatus(p)))
 }
 
+const ACTIVE_MODEL_KEY = 'mobileclaw_active_model'
+
+function readStoredActiveModel() {
+  if (typeof localStorage === 'undefined') return {}
+  try {
+    return JSON.parse(localStorage.getItem(ACTIVE_MODEL_KEY) || '{}')
+  } catch {
+    return {}
+  }
+}
+
+async function persistActiveModel(provider) {
+  const stored = readStoredActiveModel()
+  let model = stored.provider === provider ? (stored.model || '') : ''
+
+  try {
+    const result = await getModels(provider)
+    const models = result.models || []
+    if (model && !models.some(m => m.id === model)) {
+      model = ''
+    }
+    if (!model) {
+      const def = models.find(m => m.default) || models[0]
+      model = def?.id || ''
+    }
+  } catch { /* non-fatal */ }
+
+  if (typeof localStorage !== 'undefined') {
+    localStorage.setItem(ACTIVE_MODEL_KEY, JSON.stringify({ provider, model }))
+  }
+}
+
 async function saveApiKey() {
   if (!apiKeyInput.value.trim()) return
   await updateConfig({
@@ -405,6 +437,7 @@ async function saveApiKey() {
     provider: providerTab.value,
     apiKey: apiKeyInput.value.trim(),
   })
+  await persistActiveModel(providerTab.value)
   apiKeyInput.value = ''
   await loadAuthStatus(providerTab.value)
 }
@@ -533,6 +566,7 @@ async function submitOAuthCode() {
       refreshToken: data.refresh_token,
       expiresAt: Date.now() + (data.expires_in || 28800) * 1000,
     })
+    await persistActiveModel('anthropic')
 
     oauthCodeInput.value = ''
     waitingForCode.value = false
@@ -619,6 +653,7 @@ async function handleAppUrl(event) {
           provider: 'openrouter',
           apiKey: key,
         })
+        await persistActiveModel('openrouter')
         await loadAuthStatus('openrouter')
         providerTab.value = 'openrouter'
       }
