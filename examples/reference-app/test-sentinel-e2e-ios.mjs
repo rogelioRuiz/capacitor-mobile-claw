@@ -26,7 +26,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 // ─── Config ──────────────────────────────────────────────────────────────────
 const BUNDLE_ID = 'io.mobileclaw.reference'
 const RUNNER_PORT = 8099
-const TOTAL_TESTS = 100 // 57 sentinel + 1 credential injection + ~42 memory/lancedb
+const TOTAL_TESTS = 126 // sentinel + memory/lancedb + credential + mock heartbeat tests
 const TIMEOUT_MS = 300_000 // 5 minutes (heartbeat wakes need Claude API calls)
 
 // Load OAuth credentials from env or JSON file
@@ -248,28 +248,33 @@ async function main() {
   try {
     const iosDir = path.join(__dirname, 'ios/App')
 
-    // Touch marker before build
-    execSync('touch /tmp/.sentinel-build-marker', { shell: true })
     console.log('  → Building with xcodebuild...')
-    execSync(
+    const buildOutput = execSync(
       `xcodebuild -project App.xcodeproj -scheme App -sdk iphonesimulator ` +
         `-destination "platform=iOS Simulator,id=${udid}" -configuration Debug build ` +
-        `CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO`,
+        `CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO ` +
+        `-showBuildSettings 2>/dev/null | grep -m1 '^ *BUILT_PRODUCTS_DIR'`,
       {
         cwd: iosDir,
         encoding: 'utf8',
         timeout: 300000,
-        stdio: ['ignore', 'pipe', 'pipe'],
+        shell: true,
       },
-    )
+    ).trim()
+    // Extract BUILT_PRODUCTS_DIR from xcodebuild -showBuildSettings
+    const builtProductsDir = buildOutput.split('=').slice(1).join('=').trim()
 
     console.log('  → Installing app...')
-    const appPath = execSync(
-      `find ~/Library/Developer/Xcode/DerivedData -name "App.app" ` +
-        `-newer /tmp/.sentinel-build-marker ` +
-        `-path "*/Debug-iphonesimulator/*" -not -path "*PlugIns*" 2>/dev/null | head -1`,
-      { encoding: 'utf8', shell: true },
-    ).trim()
+    let appPath = builtProductsDir ? path.join(builtProductsDir, 'App.app') : ''
+    // Fallback: search DerivedData if showBuildSettings didn't work
+    if (!appPath || !execSync(`test -d "${appPath}" && echo ok || true`, { encoding: 'utf8', shell: true }).trim()) {
+      appPath = execSync(
+        `find ~/Library/Developer/Xcode/DerivedData -name "App.app" ` +
+          `-path "*/Debug-iphonesimulator/*" -not -path "*PlugIns*" 2>/dev/null ` +
+          `| xargs -I{} stat -f '%m %N' {} | sort -rn | head -1 | cut -d' ' -f2-`,
+        { encoding: 'utf8', shell: true },
+      ).trim()
+    }
     if (!appPath) throw new Error('App.app not found in DerivedData')
 
     // Uninstall first to clear app container data between runs
@@ -294,7 +299,7 @@ async function main() {
   }
 
   // ─── 4. Wait for app-driven tests ────────────────────────────────────
-  logSection('2 — App-Driven Tests (57 tests)')
+  logSection('2 — App-Driven Tests')
   console.log('  → Waiting for app to run all tests and POST results...\n')
 
   let captureResult

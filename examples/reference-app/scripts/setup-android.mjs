@@ -135,4 +135,22 @@ if (!existsSync(DIST)) {
 console.log('[setup-android] Running cap sync android...')
 execSync('npx cap sync android', { cwd: ROOT, stdio: 'inherit' })
 
+// Verify cordova-plugins build.gradle isn't truncated (cap sync can produce truncated files)
+const cordovaGradle = join(ANDROID, 'capacitor-cordova-android-plugins', 'build.gradle')
+if (existsSync(cordovaGradle)) {
+  const content = readFileSync(cordovaGradle, 'utf8')
+  if (!content.trimEnd().endsWith('}')) {
+    console.log('[setup-android] Detected truncated cordova-plugins build.gradle — re-syncing...')
+    const { unlinkSync } = await import('fs')
+    unlinkSync(cordovaGradle)
+    execSync('npx cap sync android', { cwd: ROOT, stdio: 'inherit' })
+    const fixed = readFileSync(cordovaGradle, 'utf8')
+    if (fixed.trimEnd().endsWith('}')) {
+      console.log('[setup-android] Fixed truncated build.gradle')
+    } else {
+      console.error('[setup-android] WARNING: cordova-plugins build.gradle may still be truncated')
+    }
+  }
+}
+
 console.log('[setup-android] Done! Build with: npm run build:android')

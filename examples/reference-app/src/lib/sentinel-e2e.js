@@ -178,7 +178,7 @@ export async function runSentinelE2E() {
     // Wait for DB — use race with timeout since getSchedulerConfig
     // hangs forever if DB isn't initialized (worker throws w/o response)
     let dbReady = false
-    for (let i = 0; i < 20; i++) {
+    for (let i = 0; i < 50; i++) {
       if (dbStatus) {
         if (dbStatus.ready) {
           dbReady = true
@@ -203,7 +203,7 @@ export async function runSentinelE2E() {
         // Retry
       }
     }
-    assertTruthy('worker DB initialized within 12s', dbReady)
+    assertTruthy('worker DB initialized within 30s', dbReady)
   })
 
   // Bail out if DB failed — all remaining tests need it

@@ -51,7 +51,12 @@ npm run build:android
 adb install -r android/app/build/outputs/apk/debug/app-debug.apk
 ```
 
-> **Requires**: JDK 21+, Android SDK. Set `ANDROID_HOME` and `JAVA_HOME` if not auto-detected.
+> **Requires**: JDK 21+, Android SDK. You **must** set `ANDROID_HOME` and `JAVA_HOME`:
+> ```bash
+> export ANDROID_HOME=$HOME/Library/Android/sdk   # macOS
+> export ANDROID_HOME=$HOME/Android/Sdk            # Linux
+> export JAVA_HOME=$(/usr/libexec/java_home)       # macOS
+> ```
 
 ### Run on iOS
 
@@ -79,13 +84,13 @@ npx cap open ios
 ### Running Tests
 
 ```bash
-# Unit tests (64 tests)
+# Unit tests (88 tests)
 npm test
 
-# Android E2E (111 tests, requires ADB device)
+# Android E2E (126 tests, requires ADB device/emulator)
 npm run test:android
 
-# iOS E2E (111 tests, requires booted Simulator)
+# iOS E2E (126 tests, requires booted Simulator)
 npm run test:ios
 
 # Full suite: unit + Android + iOS (skips unavailable platforms)
@@ -333,7 +338,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, workflow, and guid
 | Python | [Pyodide](https://pyodide.org/) (CPython via WebAssembly) |
 | Type system | TypeScript (strict mode) |
 | Lint | [Biome](https://biomejs.dev/) |
-| Tests | [Vitest](https://vitest.dev/) (64 unit) + Sentinel E2E (111 on-device) |
+| Tests | [Vitest](https://vitest.dev/) (88 unit) + Sentinel E2E (126 on-device) |
 
 ## Acknowledgments
 
