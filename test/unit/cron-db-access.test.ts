@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 const sqliteState = vi.hoisted(() => {
   const db = {
     open: vi.fn(async () => {}),
+    execute: vi.fn(async () => ({ changes: { changes: 0 } })),
     run: vi.fn(async () => ({ changes: 1, lastId: 0 })),
     query: vi.fn(async () => ({ values: [] })),
   }

@@ -649,6 +649,107 @@ export class CronDbAccess {
     }
 
     await this.db.open()
+
+    // Ensure schema exists (tables may not exist on a fresh install)
+    await this.db.execute(
+      `
+      CREATE TABLE IF NOT EXISTS scheduler_config (
+        id INTEGER PRIMARY KEY,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        scheduling_mode TEXT NOT NULL DEFAULT 'balanced',
+        run_on_charging INTEGER NOT NULL DEFAULT 1,
+        global_active_hours_start TEXT,
+        global_active_hours_end TEXT,
+        global_active_hours_tz TEXT,
+        updated_at INTEGER
+      );
+
+      CREATE TABLE IF NOT EXISTS heartbeat_config (
+        id INTEGER PRIMARY KEY,
+        enabled INTEGER NOT NULL DEFAULT 0,
+        every_ms INTEGER NOT NULL DEFAULT 1800000,
+        prompt TEXT,
+        skill_id TEXT,
+        active_hours_start TEXT,
+        active_hours_end TEXT,
+        active_hours_tz TEXT,
+        next_run_at INTEGER,
+        last_heartbeat_hash TEXT,
+        last_heartbeat_sent_at INTEGER,
+        updated_at INTEGER
+      );
+
+      CREATE TABLE IF NOT EXISTS cron_skills (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        allowed_tools TEXT,
+        system_prompt TEXT,
+        model TEXT,
+        max_turns INTEGER NOT NULL DEFAULT 3,
+        timeout_ms INTEGER NOT NULL DEFAULT 60000,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS cron_jobs (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        session_target TEXT NOT NULL DEFAULT 'isolated',
+        wake_mode TEXT NOT NULL DEFAULT 'next-heartbeat',
+        schedule_kind TEXT,
+        schedule_every_ms INTEGER,
+        schedule_anchor_ms INTEGER,
+        schedule_at_ms INTEGER,
+        skill_id TEXT,
+        prompt TEXT,
+        delivery_mode TEXT NOT NULL DEFAULT 'notification',
+        delivery_webhook_url TEXT,
+        delivery_notification_title TEXT,
+        active_hours_start TEXT,
+        active_hours_end TEXT,
+        active_hours_tz TEXT,
+        last_run_at INTEGER,
+        next_run_at INTEGER,
+        last_run_status TEXT,
+        last_error TEXT,
+        last_duration_ms INTEGER,
+        last_response_hash TEXT,
+        last_response_sent_at INTEGER,
+        consecutive_errors INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS cron_runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_id TEXT NOT NULL,
+        started_at INTEGER NOT NULL,
+        ended_at INTEGER,
+        status TEXT,
+        duration_ms INTEGER,
+        error TEXT,
+        response_text TEXT,
+        was_heartbeat_ok INTEGER NOT NULL DEFAULT 0,
+        was_deduped INTEGER NOT NULL DEFAULT 0,
+        delivered INTEGER NOT NULL DEFAULT 0,
+        wake_source TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS system_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_key TEXT NOT NULL,
+        context_key TEXT,
+        text TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        consumed INTEGER NOT NULL DEFAULT 0
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_cron_runs_job ON cron_runs(job_id);
+      CREATE INDEX IF NOT EXISTS idx_system_events_session ON system_events(session_key, consumed);
+    `,
+      false,
+    )
   }
 
   private async _run(sql: string, params: unknown[] = []): Promise<void> {
