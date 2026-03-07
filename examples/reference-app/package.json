@@ -7,7 +7,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "preinstall": "node -e \"const{execSync}=require('child_process'),{existsSync}=require('fs');if(!existsSync('../../dist')){console.log('Building capacitor-mobile-claw...');execSync('npm install --ignore-scripts',{cwd:'../../',stdio:'inherit'});execSync('./node_modules/.bin/tsc',{cwd:'../../',stdio:'inherit'})}\"",
+    "preinstall": "node -e \"const{execSync}=require('child_process'),{existsSync}=require('fs'),{join}=require('path');if(!existsSync('../../dist')){console.log('Building capacitor-mobile-claw...');execSync('npm install --ignore-scripts',{cwd:'../../',stdio:'inherit'});execSync(join('node_modules','.bin','tsc'),{cwd:'../../',stdio:'inherit',shell:true})}\"",
     "postinstall": "node scripts/patch-sqlite-ios.mjs",
     "dev": "vite",
     "build": "vite build",
@@ -16,7 +16,7 @@
     "cap:build": "vite build && npm run cap:sync",
     "setup:android": "node scripts/setup-android.mjs",
     "setup:ios": "node scripts/setup-ios.mjs",
-    "build:android": "npm run cap:build && cd android && ./gradlew assembleDebug",
+    "build:android": "npm run cap:build && node -e \"const{execSync}=require('child_process'),{join}=require('path');const g=process.platform==='win32'?'gradlew.bat':'./gradlew';execSync(g+' assembleDebug',{cwd:join('android'),stdio:'inherit'})\"",
     "build:ios": "npm run cap:build && cd ios/App && xcodebuild -project App.xcodeproj -scheme App -sdk iphonesimulator -configuration Debug build CODE_SIGN_IDENTITY='' CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO ARCHS=arm64 ONLY_ACTIVE_ARCH=YES -quiet",
     "test:full": "node scripts/test-full.mjs",
     "test:android": "node test-sentinel-e2e.mjs",

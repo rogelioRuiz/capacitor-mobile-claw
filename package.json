@@ -30,7 +30,7 @@
     "test:watch": "vitest",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
     "typecheck": "tsc --noEmit",
-    "postinstall": "node -e \"try{require('@biomejs/biome/bin/biome')}catch{const{platform,arch}=process;const p='@biomejs/cli-'+platform+'-'+arch;console.log('Installing '+p+'...');require('child_process').execSync('npm install '+p,{stdio:'inherit'})}\" 2>/dev/null || true",
+    "postinstall": "node -e \"try{require('@biomejs/biome/bin/biome')}catch{try{const{platform,arch}=process;const p='@biomejs/cli-'+platform+'-'+arch;console.log('Installing '+p+'...');require('child_process').execSync('npm install '+p,{stdio:'inherit'})}catch(err){console.warn('Optional biome CLI installation failed.')}}\"",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
     "format": "biome format --write .",

@@ -3,3 +3,4 @@ dist/
 android/
 ios/
 .sentinel-creds.json
+public/

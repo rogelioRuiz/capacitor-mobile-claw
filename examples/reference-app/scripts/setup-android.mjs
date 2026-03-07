@@ -10,18 +10,38 @@
  * Safe to run multiple times — each patch checks before applying.
  */
 
-import { readFileSync, writeFileSync, existsSync } from 'fs'
+import { readFileSync, writeFileSync, existsSync, unlinkSync } from 'fs'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import { execSync } from 'child_process'
 
-if (!process.env.ANDROID_HOME && !process.env.ANDROID_SDK_ROOT) {
-  console.error(
-    '[setup-android] ERROR: ANDROID_HOME is not set.\n\n' +
-      '  export ANDROID_HOME=$HOME/Android/Sdk        # Linux\n' +
-      '  export ANDROID_HOME=$HOME/Library/Android/sdk  # macOS\n',
-  )
-  process.exit(1)
+let androidHome = process.env.ANDROID_HOME || process.env.ANDROID_SDK_ROOT
+if (!androidHome) {
+  const isWin = process.platform === 'win32'
+  const isMac = process.platform === 'darwin'
+  const home = process.env.USERPROFILE || process.env.HOME || ''
+  const localAppData = process.env.LOCALAPPDATA || join(home, 'AppData', 'Local')
+
+  if (isWin) {
+    androidHome = join(localAppData, 'Android', 'Sdk')
+  } else if (isMac) {
+    androidHome = join(home, 'Library', 'Android', 'sdk')
+  } else {
+    androidHome = join(home, 'Android', 'Sdk')
+  }
+
+  if (existsSync(androidHome)) {
+    process.env.ANDROID_HOME = androidHome
+    console.log(`[setup-android] ANDROID_HOME auto-detected: ${androidHome}`)
+  } else {
+    console.error(
+      '[setup-android] ERROR: ANDROID_HOME is not set.\n\n' +
+        '  export ANDROID_HOME=$HOME/Android/Sdk          # Linux\n' +
+        '  export ANDROID_HOME=$HOME/Library/Android/sdk   # macOS\n' +
+        '  $env:ANDROID_HOME="$env:LocalAppData\\Android\\Sdk" # Windows\n',
+    )
+    process.exit(1)
+  }
 }
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -141,7 +161,6 @@ if (existsSync(cordovaGradle)) {
   const content = readFileSync(cordovaGradle, 'utf8')
   if (!content.trimEnd().endsWith('}')) {
     console.log('[setup-android] Detected truncated cordova-plugins build.gradle — re-syncing...')
-    const { unlinkSync } = await import('fs')
     unlinkSync(cordovaGradle)
     execSync('npx cap sync android', { cwd: ROOT, stdio: 'inherit' })
     const fixed = readFileSync(cordovaGradle, 'utf8')
