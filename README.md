@@ -87,15 +87,17 @@ npx cap open ios
 # Unit tests (88 tests)
 npm test
 
-# Android E2E (126 tests, requires ADB device/emulator)
+# Android E2E (124 tests, requires ADB device/emulator)
 npm run test:android
 
-# iOS E2E (126 tests, requires booted Simulator)
+# iOS E2E (140 tests, requires booted Simulator)
 npm run test:ios
 
 # Full suite: unit + Android + iOS (skips unavailable platforms)
 npm run test:full
 ```
+
+> **Test credentials**: Some E2E tests require an Anthropic API key or OAuth token. Without credentials, those tests are gracefully skipped. Set `ANTHROPIC_API_KEY` or create `examples/reference-app/.sentinel-creds.json` with `{ "apiKey": "sk-..." }` to run the full suite.
 
 Once the app launches, enter your Anthropic API key in settings and start chatting. The agent can read/write files, run code, use git, and call any registered MCP device tools — all on-device.
 
@@ -338,7 +340,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, workflow, and guid
 | Python | [Pyodide](https://pyodide.org/) (CPython via WebAssembly) |
 | Type system | TypeScript (strict mode) |
 | Lint | [Biome](https://biomejs.dev/) |
-| Tests | [Vitest](https://vitest.dev/) (88 unit) + Sentinel E2E (126 on-device) |
+| Tests | [Vitest](https://vitest.dev/) (88 unit) + Sentinel E2E (140 on-device) |
 
 ## Acknowledgments
 

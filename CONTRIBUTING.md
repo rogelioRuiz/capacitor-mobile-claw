@@ -26,15 +26,10 @@ npm run build
 npm test
 ```
 
-### Why are `nodejs-assets/nodejs-project/node_modules/` committed to git?
-
-The embedded Node.js worker runs on-device (Android/iOS) where there is no package manager. Its dependencies must ship as-is in both the npm package and the git repo. This is standard practice for Capacitor-NodeJS plugins. If you need to update a worker dependency, edit `nodejs-assets/nodejs-project/package.json`, run `npm run worker:install`, then commit the updated `node_modules/`.
-
 ## Project Structure
 
 ```
 src/                    # TypeScript plugin source (compiled to dist/esm/)
-nodejs-assets/          # Embedded Node.js worker (ships to device)
 examples/reference-app/ # Complete Vue 3 demo app
 test/                   # Unit and E2E tests
 docs/                   # Extended documentation
@@ -43,8 +38,7 @@ docs/                   # Extended documentation
 Key files:
 - `src/engine.ts` — The core `MobileClawEngine` class
 - `src/definitions.ts` — All TypeScript interfaces
-- `src/services/bridge-protocol.ts` — UI-to-Worker message types
-- `nodejs-assets/nodejs-project/main.js` — Worker entry point
+- `src/services/bridge-protocol.ts` — Bridge message types
 
 ## Development Commands
 

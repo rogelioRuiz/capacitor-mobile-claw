@@ -2,5 +2,4 @@ node_modules/
 dist/
 android/
 ios/
-public/nodejs-project/
 .sentinel-creds.json

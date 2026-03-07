@@ -1,15 +1,10 @@
 # Dependencies
 node_modules/
-# Worker node_modules are intentionally committed — they ship to the device.
-# No package manager on Android/iOS, so deps must be in the repo.
-!nodejs-assets/nodejs-project/node_modules/
 
 # Build output
 dist/
 android/build/
 
-# Generated worker copy (setup:worker copies nodejs-assets → public/)
-**/public/nodejs-project/
 # Reference-app lockfile is platform-specific (optional native deps differ by OS)
 examples/reference-app/package-lock.json
 
