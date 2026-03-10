@@ -70,6 +70,10 @@ export class MobileClawEngine {
   private _mobileCron: any = null
 
   // ── Agent ──────────────────────────────────────────────────────────────
+  private _activeSkillId: string | null = null
+  private _skillAgent: any = null // Pi Agent instance for active skill (persists across turns)
+  private _skillSessionKey: string | null = null
+  private _skillEndRequested = false
   private _agentRunner: AgentRunner | null = null
   private _toolProxy: ToolProxy | null = null
   private _sessionStore: SessionStore | null = null
@@ -344,8 +348,373 @@ export class MobileClawEngine {
         denyReason as string | undefined,
       )
     }
+
+    if (message.type === 'skill.start') {
+      console.log(`[Skill] skill.start received skill=${message.skill}`)
+      this._handleSkillStart(message).catch((err) => {
+        this._dispatch({ type: 'agent.error', error: err.message || 'Skill start failed' })
+      })
+      return
+    }
+
+    if (message.type === 'skill.end') {
+      console.log(`[Skill] skill.end received activeSkill=${this._activeSkillId}`)
+      if (this._activeSkillId) {
+        this._endSkill(this._activeSkillId, this._skillSessionKey || '')
+      }
+      return
+    }
+
+    // Route skill.tool_result to local listeners (waitForResult tools listen for this)
+    if (message.type === 'skill.tool_result') {
+      console.log(`[Skill] skill.tool_result routed requestId=${(message as any).requestId}`)
+      this._dispatch(message as any)
+      return
+    }
+
     // No worker to send to — dispatch locally for any listeners
     this._dispatch(message as any)
+  }
+
+  /**
+   * Handle a skill.start message: create a persistent skill agent with the
+   * skill's custom system prompt, tools, and kickoff. The agent stays alive
+   * across turns so follow-up messages reuse it (same as old worker's
+   * currentAgent pattern).
+   */
+  private async _handleSkillStart(message: Record<string, unknown>): Promise<void> {
+    const skillId = (message.skill as string) || 'unknown'
+    const config = message.config as any
+    console.log(`[Skill] _handleSkillStart skillId=${skillId}`)
+    if (!config?.systemPrompt || !config?.kickoff) {
+      console.warn(`[Skill] skill "${skillId}" missing systemPrompt or kickoff — aborting`)
+      this._dispatch({ type: 'agent.error', error: `Skill "${skillId}" missing systemPrompt or kickoff in config` })
+      return
+    }
+
+    // Guard: end any active skill before starting a new one
+    if (this._activeSkillId) {
+      console.warn(
+        `[Skill] concurrent guard: ending active skill="${this._activeSkillId}" before starting "${skillId}"`,
+      )
+      this._endSkill(this._activeSkillId, this._skillSessionKey || '')
+    }
+
+    // Force a new session for the skill
+    const sessionKey = `${skillId}/${Date.now()}`
+    this._currentSessionKey = sessionKey
+    this._skillEndRequested = false
+    console.log(`[Skill] sessionKey=${sessionKey}`)
+
+    // ── Generic flag-based tool builder ─────────────────────────────────
+    // Skills declare behavior via flags on tool definitions:
+    //   milestone: true       → track milestone, dispatch {skillId}.milestone
+    //   bridgeEvent: string   → dispatch event to UI
+    //   waitForResult: true   → suspend until skill.tool_result arrives
+    //   endsSkill: true       → defer _endSkill() to after turn completes
+    //   execute: fn           → custom handler provided by skill
+    const milestones: string[] = config.milestones || []
+    const milestonesReached = new Set<string>()
+
+    const toToolResult = (result: Record<string, unknown>) => ({
+      content: [{ type: 'text' as const, text: JSON.stringify(result) }],
+      details: result,
+    })
+
+    // Context passed to custom execute functions
+    const ctx = {
+      dispatch: (event: any) => this._dispatch(event),
+      writeFile: (path: string, content: string) => writeFileNative({ path, content }),
+      readFile: (path: string) => readFileNative({ path }),
+      skillId,
+      sessionKey,
+    }
+
+    const skillTools = (config.tools || []).map((toolDef: any) => {
+      const base = {
+        name: toolDef.name,
+        label: toolDef.name.replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase()),
+        description: toolDef.description || '',
+        parameters: toolDef.input_schema || toolDef.inputSchema || { type: 'object', properties: {} },
+      } as any
+
+      // milestone tools — validate, track in Set, dispatch progress
+      if (toolDef.milestone) {
+        base.execute = async (_id: string, params: Record<string, unknown>) => {
+          const m = params.milestone as string
+          if (milestones.includes(m)) {
+            milestonesReached.add(m)
+            console.log(`[Skill] milestone=${m} valid=true count=${milestonesReached.size}`)
+            this._dispatch({ type: `${skillId}.milestone`, milestone: m, completedCount: milestonesReached.size })
+          }
+          return toToolResult({ success: true, milestone: m, completedCount: milestonesReached.size })
+        }
+        return base
+      }
+
+      // custom execute — skill provides its own handler
+      if (typeof toolDef.execute === 'function') {
+        base.execute = async (_id: string, params: Record<string, unknown>) => {
+          console.log(`[Skill] custom execute tool=${toolDef.name} endsSkill=${!!toolDef.endsSkill}`)
+          const result = await toolDef.execute(params, ctx)
+          if (toolDef.endsSkill) this._skillEndRequested = true
+          return toToolResult(result || {})
+        }
+        return base
+      }
+
+      // bridgeEvent + waitForResult — dispatch event, suspend until UI responds
+      if (toolDef.bridgeEvent && toolDef.waitForResult) {
+        const eventType = toolDef.bridgeEvent
+        base.execute = async (_id: string, params: Record<string, unknown>) => {
+          const requestId = `${toolDef.name}-${Date.now()}-${Math.random().toString(36).slice(2)}`
+          console.log(`[Skill] waitForResult tool=${toolDef.name} requestId=${requestId} event=${eventType}`)
+          return new Promise<ReturnType<typeof toToolResult>>((resolve) => {
+            this._onMessage(
+              'skill.tool_result',
+              (msg: any) => {
+                if (msg.requestId === requestId) {
+                  console.log(`[Skill] waitForResult resolved tool=${toolDef.name} requestId=${requestId}`)
+                  if (toolDef.endsSkill) this._skillEndRequested = true
+                  resolve(toToolResult(msg.result || {}))
+                }
+              },
+              { once: true },
+            )
+            this._dispatch({ type: eventType, requestId, ...params })
+          })
+        }
+        return base
+      }
+
+      // bridgeEvent (fire-and-forget) — dispatch event, return success
+      if (toolDef.bridgeEvent) {
+        const eventType = toolDef.bridgeEvent
+        base.execute = async (_id: string, params: Record<string, unknown>) => {
+          console.log(`[Skill] bridgeEvent tool=${toolDef.name} event=${eventType}`)
+          this._dispatch({ type: eventType, ...params })
+          if (toolDef.endsSkill) this._skillEndRequested = true
+          return toToolResult({ success: true, applied: true })
+        }
+        return base
+      }
+
+      // endsSkill only (no bridgeEvent, no execute) — dispatch generic event + defer end
+      if (toolDef.endsSkill) {
+        base.execute = async (_id: string, params: Record<string, unknown>) => {
+          console.log(`[Skill] endsSkill tool=${toolDef.name}`)
+          this._dispatch({ type: `${skillId}.${toolDef.name}`, ...params })
+          this._skillEndRequested = true
+          return toToolResult(params)
+        }
+        return base
+      }
+
+      // Generic fallback — dispatch event, return params
+      base.execute = async (_id: string, params: Record<string, unknown>) => {
+        this._dispatch({ type: `${skillId}.${toolDef.name}`, ...params, skillId, toolName: toolDef.name })
+        return toToolResult(params)
+      }
+      return base
+    })
+
+    console.log(`[Skill] built ${skillTools.length} skill tools: ${skillTools.map((t: any) => t.name).join(', ')}`)
+
+    // Activate skill mode — _dispatch will tag agent events with this ID.
+    // Stays set until _endSkill() is called (NOT cleared on agent.completed,
+    // so follow-up turns keep their skill tags).
+    this._activeSkillId = skillId
+    this._skillSessionKey = sessionKey
+
+    // Notify that the skill session is starting
+    this._dispatch({ type: 'skill.session_started', skillId, sessionKey })
+
+    const provider = (message.provider as string) || 'anthropic'
+    try {
+      const [authResult] = await Promise.all([getAuthToken(provider, 'main')])
+      console.log(`[Skill] auth for provider="${provider}" hasKey=${!!authResult.apiKey}`)
+      if (!authResult.apiKey) {
+        this._endSkill(skillId, sessionKey)
+        this._dispatch({
+          type: 'agent.error',
+          error: `No API key configured for provider "${provider}". Go to Settings to add one.`,
+        })
+        return
+      }
+
+      const [{ getModel }, { Agent }] = await Promise.all([
+        import('@mariozechner/pi-ai'),
+        import('@mariozechner/pi-agent-core'),
+      ])
+      const modelId = 'claude-sonnet-4-5'
+      const model = (getModel as any)(provider, modelId)
+
+      // Skill tools win on name conflict (same as old worker's setupNames filter).
+      // Base/MCP tools get pre-execute hook wrapping; skill tools do NOT.
+      const skillNames = new Set(skillTools.map((t: any) => t.name))
+      const filteredExtra = (this._extraAgentTools || [])
+        .filter((t: any) => !skillNames.has(t.name))
+        .map((t: any) => this._wrapToolWithPreExecute(t))
+      const tools = [...skillTools, ...filteredExtra]
+      console.log(
+        `[Skill] agent created model=${modelId}, ${skillTools.length} skill + ${filteredExtra.length} base = ${tools.length} tools`,
+      )
+
+      const agent = new (Agent as any)({
+        initialState: { systemPrompt: config.systemPrompt, model, tools, thinkingLevel: 'off' },
+        convertToLlm: (messages: any[]) =>
+          messages.filter((m: any) => m.role === 'user' || m.role === 'assistant' || m.role === 'toolResult'),
+        getApiKey: () => authResult.apiKey,
+      })
+
+      // Permanent subscription — tags events with skill context across ALL turns.
+      // Guard: ignore events if this agent's session is no longer active (concurrent guard ended it).
+      const mySessionKey = sessionKey
+      agent.subscribe((event: any) => {
+        if (this._skillSessionKey !== mySessionKey) {
+          console.warn(`[Skill] stale session guard dropping event type=${event.type}`)
+          return
+        }
+        switch (event.type) {
+          case 'message_update': {
+            const e = event.assistantMessageEvent
+            if (e.type === 'text_delta') {
+              this._dispatch({ type: 'agent.event', eventType: 'text_delta', data: { text: e.delta } })
+            }
+            if (e.type === 'thinking_delta') {
+              this._dispatch({ type: 'agent.event', eventType: 'thinking', data: { text: e.delta } })
+            }
+            break
+          }
+          case 'tool_execution_start':
+            this._dispatch({
+              type: 'agent.event',
+              eventType: 'tool_use',
+              data: { toolName: event.toolName, toolCallId: event.toolCallId, args: event.args },
+            })
+            break
+          case 'tool_execution_end':
+            this._dispatch({
+              type: 'agent.event',
+              eventType: 'tool_result',
+              data: { toolName: event.toolName, toolCallId: event.toolCallId, result: event.result },
+            })
+            break
+        }
+      })
+
+      // Store for follow-up reuse (same as old worker's currentAgent = agent)
+      this._skillAgent = agent
+
+      // Run first turn (kickoff) — no user_message echo for internal instruction
+      console.log(`[Skill] running kickoff promptLen=${config.kickoff.length}`)
+      await this._runSkillTurn(agent, config.kickoff, sessionKey, modelId, false)
+    } catch (err: any) {
+      console.error(`[Skill] _handleSkillStart error: ${err.message}`)
+      this._endSkill(skillId, sessionKey)
+      this._dispatch({ type: 'agent.error', error: err.message || 'Skill agent failed' })
+    }
+  }
+
+  /**
+   * Run a single turn on the skill agent (kickoff or follow-up).
+   * Mirrors the old worker's agent.prompt() + waitForIdle() pattern.
+   */
+  private async _runSkillTurn(
+    agent: any,
+    prompt: string,
+    sessionKey: string,
+    modelId: string,
+    echoUserMessage: boolean,
+  ): Promise<void> {
+    console.log(`[Skill] _runSkillTurn promptLen=${prompt.length} sessionKey=${sessionKey} echo=${echoUserMessage}`)
+    if (echoUserMessage) {
+      this._dispatch({
+        type: 'agent.event',
+        eventType: 'user_message',
+        data: { text: prompt, sessionKey },
+      })
+    }
+
+    const startTime = Date.now()
+    try {
+      await agent.prompt(prompt)
+      await agent.waitForIdle()
+      console.log(`[Skill] waitForIdle completed durationMs=${Date.now() - startTime}`)
+
+      // Guard: skill was ended (e.g. by concurrent guard) while we were waiting
+      if (this._skillSessionKey !== sessionKey) {
+        console.warn(`[Skill] _runSkillTurn stale session guard after waitForIdle`)
+        return
+      }
+
+      if (agent.state?.error) {
+        console.error('[MobileClaw] skill agent error:', agent.state.error)
+      }
+
+      console.log(`[Skill] agent.completed dispatched durationMs=${Date.now() - startTime}`)
+      this._dispatch({
+        type: 'agent.completed',
+        sessionKey,
+        model: modelId,
+        durationMs: Date.now() - startTime,
+      })
+
+      // Deferred skill end — if a tool set _skillEndRequested, end now
+      // (after agent.completed so all events retain their skill tag)
+      if (this._skillEndRequested && this._activeSkillId) {
+        console.log(`[Skill] deferred _endSkill triggered skillId=${this._activeSkillId}`)
+        this._skillEndRequested = false
+        this._endSkill(this._activeSkillId, sessionKey)
+      }
+    } catch (err: any) {
+      // Guard: ignore errors from aborted/ended skill turns
+      if (this._skillSessionKey !== sessionKey) {
+        console.warn(`[Skill] _runSkillTurn stale session guard in catch — ignoring error: ${err.message}`)
+        return
+      }
+      console.error(`[Skill] _runSkillTurn error: ${err.message}`)
+      this._dispatch({
+        type: 'agent.error',
+        error: err.message || 'Skill turn failed',
+        retryable: err.status === 429 || err.status === 529,
+      })
+    }
+  }
+
+  /** Clear skill state and notify UI */
+  private _endSkill(skillId: string, sessionKey: string): void {
+    console.log(`[Skill] _endSkill skillId=${skillId} sessionKey=${sessionKey} hadAgent=${!!this._skillAgent}`)
+    // Abort any in-progress agent turn to prevent stale events
+    if (this._skillAgent) {
+      try {
+        this._skillAgent.abort()
+      } catch (_) {
+        /* ignore */
+      }
+    }
+    this._activeSkillId = null
+    this._skillAgent = null
+    this._skillSessionKey = null
+    this._skillEndRequested = false
+    this._dispatch({ type: 'skill.ended', skillId, sessionKey })
+  }
+
+  /**
+   * Wrap a single tool with the pre-execute hook (approval gate).
+   * Used for base/MCP tools in skill mode — skill-specific tools skip this.
+   */
+  private _wrapToolWithPreExecute(tool: any): any {
+    if (!this._toolMiddleware) return tool
+    const middleware = this._toolMiddleware
+    return {
+      ...tool,
+      execute: async (toolCallId: string, args: Record<string, unknown>, signal?: AbortSignal, onUpdate?: any) => {
+        const execute = (nextArgs?: Record<string, unknown>) =>
+          tool.execute(toolCallId, nextArgs ?? args, signal, onUpdate)
+        return middleware({ name: tool.name, toolCallId, args }, execute, signal)
+      },
+    }
   }
 
   /** Internal message listener (returns unsubscribe fn) */
@@ -364,6 +733,25 @@ export class MobileClawEngine {
   }
 
   private _dispatch(msg: any): void {
+    // Tag agent events with active skill ID so consumers can filter
+    if (this._activeSkillId && !msg.skill) {
+      const agentTypes = [
+        'agent.event',
+        'agent.completed',
+        'agent.error',
+        'agent.started',
+        'tool.pre_execute',
+        'tool.pre_execute.result',
+        'tool.pre_execute.expired',
+      ]
+      if (agentTypes.includes(msg.type)) {
+        msg.skill = this._activeSkillId
+        // Only log non-text_delta tags to avoid flooding
+        if (msg.eventType !== 'text_delta' && msg.eventType !== 'thinking') {
+          console.log(`[Skill] tagged ${msg.type} skill=${this._activeSkillId}`)
+        }
+      }
+    }
     // Type-specific handlers
     const handlers = this.listeners.get(msg.type)
     if (handlers) {
@@ -395,6 +783,33 @@ export class MobileClawEngine {
     agentId = 'main',
     options?: { model?: string; provider?: string },
   ): Promise<{ sessionKey: string }> {
+    // Skill agent path: reuse the persistent skill agent for follow-ups
+    // (same as old worker's currentAgent.prompt(msg.prompt) in agent.start handler)
+    if (this._skillAgent && this._activeSkillId && this._skillSessionKey) {
+      const sessionKey = this._skillSessionKey
+      const modelId = (this._skillAgent.state?.model as any)?.id || 'claude-sonnet-4-5'
+      console.log(`[Skill] sendMessage follow-up skillId=${this._activeSkillId} promptLen=${prompt.length}`)
+
+      // Auto-abort in-flight turn before sending new message
+      if (this._skillAgent.state.isStreaming) {
+        console.warn(`[Skill] sendMessage auto-abort: skill agent is streaming`)
+        this._skillAgent.abort()
+        await this._skillAgent.waitForIdle()
+        this._dispatch({
+          type: 'agent.event',
+          eventType: 'interrupted',
+          data: { reason: 'New message sent while streaming' },
+        })
+      }
+
+      // Fire and forget — events dispatch through the permanent subscription
+      this._runSkillTurn(this._skillAgent, prompt, sessionKey, modelId, true).catch((err) => {
+        this._dispatch({ type: 'agent.error', error: err.message })
+      })
+      return { sessionKey }
+    }
+
+    // Regular agent path
     if (!this._currentSessionKey) {
       this._currentSessionKey = `session-${Date.now()}`
     }
@@ -455,6 +870,14 @@ export class MobileClawEngine {
     }
   }
 
+  /**
+   * Update the extra agent tools (e.g. after account tools change).
+   * Takes effect on the next agent turn — existing in-flight turns keep their tools.
+   */
+  updateExtraTools(tools: MobileClawInitOptions['tools']): void {
+    this._extraAgentTools = this._buildExtraAgentTools(tools)
+  }
+
   private _buildExtraAgentTools(tools: MobileClawInitOptions['tools'] = []): AgentTool[] {
     return (tools || []).map((tool) => ({
       name: tool.name,
@@ -464,6 +887,17 @@ export class MobileClawEngine {
       execute: async (_toolCallId: string, args: Record<string, unknown>) => {
         try {
           const result = await tool.execute(args)
+          // If the tool already returns AgentToolResult-shaped content blocks
+          // (e.g. image content blocks from analyze_file), pass them through
+          // instead of JSON-stringifying into a text block.
+          if (
+            result?.content &&
+            Array.isArray(result.content) &&
+            result.content.length > 0 &&
+            result.content[0]?.type
+          ) {
+            return { content: result.content, details: result }
+          }
           const text = typeof result === 'string' ? result : JSON.stringify(result)
           return {
             content: [{ type: 'text' as const, text }],
