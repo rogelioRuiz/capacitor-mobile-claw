@@ -24,14 +24,7 @@ const MobileClaw = registerPlugin<MobileClawPlugin>('MobileClaw', {
 export * from './definitions'
 export { MobileClaw }
 
-export type { AgentRunnerConfig, AgentRunParams, PreExecuteResult } from './agent/agent-runner'
-// WebView agent components — for consumers that need direct access
-export { AgentRunner } from './agent/agent-runner'
 export { ResourceQuotaTracker } from './agent/resource-quotas'
-export { withRetry } from './agent/retry-logic'
-export { SessionStore } from './agent/session-store'
-export { ToolProxy } from './agent/tool-proxy'
-export { TOOL_SCHEMAS } from './agent/tool-schemas'
 // Export engine for direct use (framework wrappers, testing)
 export { MobileClawEngine } from './engine'
 export { McpServerManager } from './mcp/mcp-server-manager'

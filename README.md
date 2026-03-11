@@ -4,11 +4,11 @@
 [![CI](https://github.com/rogelioRuiz/capacitor-mobile-claw/actions/workflows/ci.yml/badge.svg)](https://github.com/rogelioRuiz/capacitor-mobile-claw/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-**On-device AI agent engine for mobile apps** — run Claude directly on your phone with file tools, code execution, git, and extensible MCP tool support.
+**On-device AI agent engine for mobile apps** — run Claude natively on your phone with file tools, code execution, git, and extensible MCP tool support.
 
-Mobile Claw is a [Capacitor](https://capacitorjs.com/) plugin that embeds a full AI agent runtime on Android and iOS. The agent loop runs directly in the WebView for instant cold start, with LLM API calls routed through native HTTP (OkHttp / URLSession) to bypass CORS — full SSE streaming, no cloud relay, no proxy. Includes **on-device vector memory** via [LanceDB](https://www.npmjs.com/package/capacitor-lancedb), **background scheduling** via [MobileCron](https://www.npmjs.com/package/capacitor-mobilecron) (WorkManager / BGTaskScheduler), and cron jobs with reusable skills.
+Mobile Claw is a [Capacitor](https://capacitorjs.com/) plugin that provides a thin WebView bridge to a **native Rust AI agent** ([capacitor-native-agent](https://www.npmjs.com/package/capacitor-native-agent)). All agent logic — LLM streaming, tool execution, auth, sessions, cron/heartbeat — runs natively via UniFFI. The WebView layer handles only UI rendering, event display, and MCP device tool coordination. No cloud relay, no proxy. Includes **on-device vector memory** via [LanceDB](https://www.npmjs.com/package/capacitor-lancedb), **background scheduling** via [MobileCron](https://www.npmjs.com/package/capacitor-mobilecron) (WorkManager / BGTaskScheduler), and cron jobs with reusable skills.
 
-> Built on [OpenClaw](https://github.com/openclaw/openclaw) and the [Pi framework](https://www.npmjs.com/package/@mariozechner/pi-ai) by [Mario Zechner](https://github.com/badlogic). Pi's philosophy of *"what you leave out matters more than what you put in"* — just 4 core tools and a system prompt under 1,000 tokens — is what makes running a capable AI agent on a phone possible at all.
+> Built on [OpenClaw](https://github.com/openclaw/openclaw) and inspired by the [Pi framework](https://www.npmjs.com/package/@mariozechner/pi-ai) by [Mario Zechner](https://github.com/badlogic). Pi's philosophy of *"what you leave out matters more than what you put in"* — just 4 core tools and a system prompt under 1,000 tokens — drove the design. The agent core has since moved to a native Rust implementation for better performance and reliability.
 
 ## Try It — Reference App
 
@@ -103,20 +103,21 @@ Once the app launches, enter your Anthropic API key in settings and start chatti
 
 ## How It Works
 
-The agent loop runs directly in the WebView for instant cold start. LLM API calls are routed through native HTTP (OkHttp / URLSession) to bypass WebView CORS, with full SSE streaming. File tools, git, and code execution run on-device via the Capacitor bridge.
+The agent runs natively in Rust via [capacitor-native-agent](https://www.npmjs.com/package/capacitor-native-agent). `MobileClawEngine` in the WebView is a thin event bridge — it delegates all agent logic (LLM calls, tool execution, auth, sessions, scheduling) to the native layer via the Capacitor bridge. MCP device tools that need WebView APIs (camera, sensors, etc.) stay in JavaScript.
 
 ```
 ┌──────────────────────────────────────────────────────┐
 │  Your App (Vue, React, Svelte, vanilla JS)            │
 │  ┌────────────────────────────────────────────────┐  │
-│  │  MobileClawEngine                              │  │
-│  │  ┌──────────────┐                              │  │
-│  │  │ Pi Agent     │── Anthropic API (native HTTP)│  │
-│  │  │ (in WebView) │                              │  │
-│  │  └──────┬───────┘                              │  │
+│  │  MobileClawEngine (thin event bridge)          │  │
 │  │         │ Capacitor Bridge                      │  │
 │  │  ┌──────▼──────────────────────────────────┐   │  │
-│  │  │  File tools · Git · Code exec · SQLite  │   │  │
+│  │  │  Native Rust Agent (capacitor-native-agent) │  │
+│  │  │  LLM · Tools · Auth · Sessions · Cron   │  │
+│  │  │         │── Anthropic API (native HTTP)  │  │
+│  │  └─────────────────────────────────────────┘   │  │
+│  │  ┌─────────────────────────────────────────┐   │  │
+│  │  │  MCP Device Tools (WebView JS)           │   │  │
 │  │  └─────────────────────────────────────────┘   │  │
 │  └────────────────────────────────────────────────┘  │
 └──────────────────────────────────────────────────────┘
@@ -125,7 +126,7 @@ The agent loop runs directly in the WebView for instant cold start. LLM API call
 ## Install in Your Own App
 
 ```bash
-npm install capacitor-mobile-claw @capacitor/core @capacitor/device @capacitor-community/sqlite
+npm install capacitor-mobile-claw capacitor-native-agent @capacitor/core @capacitor/device @capacitor/filesystem
 ```
 
 If using Vite, add the bundler plugin to `vite.config.js`:
@@ -243,12 +244,12 @@ await engine.addCronJob({
 
 ## Features
 
-- **Instant cold start** — agent loop runs directly in the WebView, no boot delay
+- **Native Rust agent** — all agent logic runs natively via [capacitor-native-agent](https://www.npmjs.com/package/capacitor-native-agent) (UniFFI)
 - **On-device vector memory** — store, recall, and search memories via [LanceDB](https://www.npmjs.com/package/capacitor-lancedb) with auto-recall context injection and deduplication
 - **Background scheduling** — heartbeat check-ins and cron jobs via [MobileCron](https://www.npmjs.com/package/capacitor-mobilecron) (Android WorkManager / iOS BGTaskScheduler)
 - **Cron jobs & skills** — recurring agent tasks with reusable skill definitions, run history, and delivery modes
 - **Real-time streaming** — text deltas, tool use, and thinking events
-- **Multi-turn conversations** — session persistence via native SQLite
+- **Multi-turn conversations** — session persistence via native SQLite (in Rust agent)
 - **OAuth PKCE + API key** — sign in with Claude Max or use a direct API key
 - **File tools** — sandboxed read/write/edit/find/grep
 - **Code execution** — JavaScript (sandbox) + Python (Pyodide/WebAssembly)
@@ -317,6 +318,7 @@ await engine.addCronJob({
 
 ## Related Packages
 
+- [capacitor-native-agent](https://www.npmjs.com/package/capacitor-native-agent) — the Rust native agent runtime (LLM, tools, auth, sessions, cron)
 - [capacitor-mobile-claw-device-tools](https://www.npmjs.com/package/capacitor-mobile-claw-device-tools) — 64+ pre-built device tools (camera, clipboard, sensors, SSH, etc.)
 - [capacitor-lancedb](https://www.npmjs.com/package/capacitor-lancedb) — on-device vector database for agent memory
 - [capacitor-mobilecron](https://www.npmjs.com/package/capacitor-mobilecron) — native background scheduling (WorkManager / BGTaskScheduler)
@@ -330,13 +332,13 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, workflow, and guid
 | Layer | Technology |
 |-------|-----------|
 | Mobile framework | [Capacitor 8](https://capacitorjs.com/) |
-| Agent core | [Pi](https://www.npmjs.com/package/@mariozechner/pi-ai) by Mario Zechner |
+| Agent core | [capacitor-native-agent](https://www.npmjs.com/package/capacitor-native-agent) (Rust FFI via UniFFI) |
 | Tool protocol | [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) |
 | LLM provider | [Anthropic Claude](https://anthropic.com/) |
 | Vector memory | [LanceDB](https://lancedb.com/) via [capacitor-lancedb](https://www.npmjs.com/package/capacitor-lancedb) (Rust FFI, on-device) |
 | Background scheduling | [capacitor-mobilecron](https://www.npmjs.com/package/capacitor-mobilecron) (WorkManager / BGTaskScheduler) |
 | Git | [isomorphic-git](https://isomorphic-git.org/) |
-| Database | [@capacitor-community/sqlite](https://github.com/nicepkg/capacitor-community-sqlite) (native SQLite) |
+| Database | Native SQLite (via Rust agent) |
 | Python | [Pyodide](https://pyodide.org/) (CPython via WebAssembly) |
 | Type system | TypeScript (strict mode) |
 | Lint | [Biome](https://biomejs.dev/) |
@@ -344,7 +346,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, workflow, and guid
 
 ## Acknowledgments
 
-Mobile Claw is built on [OpenClaw](https://github.com/openclaw/openclaw) and the [Pi framework](https://www.npmjs.com/package/@mariozechner/pi-ai) by [Mario Zechner](https://github.com/badlogic) (creator of [libGDX](https://libgdx.com/)). Pi demonstrated that a truly capable AI agent doesn't need a massive framework — just four well-designed tools and a focused system prompt. That minimalism is what makes on-device mobile execution feasible.
+Mobile Claw is built on [OpenClaw](https://github.com/openclaw/openclaw) and inspired by the [Pi framework](https://www.npmjs.com/package/@mariozechner/pi-ai) by [Mario Zechner](https://github.com/badlogic) (creator of [libGDX](https://libgdx.com/)). Pi demonstrated that a truly capable AI agent doesn't need a massive framework — just four well-designed tools and a focused system prompt. That minimalism drove the design, and the agent core has since moved to a native Rust implementation for better performance and reliability on mobile.
 
 ## License
 

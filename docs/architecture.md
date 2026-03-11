@@ -2,20 +2,21 @@
 
 ## Overview
 
-Mobile Claw is a Capacitor plugin that embeds a full AI agent runtime on Android and iOS. The agent loop runs directly in the WebView for instant cold start. LLM API calls are routed through native HTTP (OkHttp / URLSession) to bypass WebView CORS, with full SSE streaming.
+Mobile Claw is a Capacitor plugin that provides a thin WebView bridge to a **native Rust AI agent** ([capacitor-native-agent](https://www.npmjs.com/package/capacitor-native-agent)). All agent logic — LLM streaming, tool execution, auth, sessions, cron/heartbeat — runs natively via UniFFI. The WebView layer handles only UI rendering, event display, and MCP device tool coordination.
 
 ```
 ┌──────────────────────────────────────────────────────┐
 │  Your App (Vue, React, Svelte, vanilla JS)            │
 │  ┌────────────────────────────────────────────────┐  │
-│  │  MobileClawEngine                              │  │
-│  │  ┌──────────────┐                              │  │
-│  │  │ Pi Agent     │── Anthropic API (native HTTP)│  │
-│  │  │ (in WebView) │                              │  │
-│  │  └──────┬───────┘                              │  │
+│  │  MobileClawEngine (thin event bridge)          │  │
 │  │         │ Capacitor Bridge                      │  │
 │  │  ┌──────▼──────────────────────────────────┐   │  │
-│  │  │  File tools · Git · Code exec · SQLite  │   │  │
+│  │  │  Native Rust Agent (capacitor-native-agent) │  │
+│  │  │  LLM · Tools · Auth · Sessions · Cron   │  │
+│  │  │         │── Anthropic API (native HTTP)  │  │
+│  │  └─────────────────────────────────────────┘   │  │
+│  │  ┌─────────────────────────────────────────┐   │  │
+│  │  │  MCP Device Tools (WebView JS)           │   │  │
 │  │  └─────────────────────────────────────────┘   │  │
 │  └────────────────────────────────────────────────┘  │
 └──────────────────────────────────────────────────────┘
@@ -23,15 +24,21 @@ Mobile Claw is a Capacitor plugin that embeds a full AI agent runtime on Android
 
 ## Layer Breakdown
 
-### UI Layer (`src/engine.ts`)
-The `MobileClawEngine` class is the public API. It is framework-agnostic — no Vue, React, or other UI framework dependency. It manages:
-- Agent lifecycle (init, ready detection, timeouts)
-- Bridge message send/receive
-- MCP server management
-- Event listener subscriptions
+### Native Agent (`capacitor-native-agent`)
+The Rust native agent owns all core logic:
+- **Agent loop** — LLM streaming and turn management
+- **Tool execution** — file tools, git, code execution, SQLite
+- **Auth store** — API key and OAuth PKCE token management
+- **Session store** — multi-turn conversation persistence
+- **Scheduler** — cron job evaluation, heartbeat lifecycle
+- **Native HTTP** — OkHttp (Android) / URLSession (iOS) for LLM API calls, bypassing WebView CORS
 
-### Bridge Protocol (`src/services/bridge-protocol.ts`)
-Typed message definitions for communication between the engine and native plugins. Messages are JSON-serialized and passed via the Capacitor bridge.
+### UI Layer (`src/engine.ts`)
+The `MobileClawEngine` class is a thin event bridge. It is framework-agnostic — no Vue, React, or other UI framework dependency. It handles:
+- Event dispatch (local listeners for UI rendering)
+- MCP server management (device tools that need WebView Capacitor APIs)
+- MobileCron registration (native wake timer scheduling)
+- OAuth code exchange (CapacitorHttp)
 
 ### MCP Subsystem (`src/mcp/`)
 Model Context Protocol implementation for extensible device tools:
@@ -43,8 +50,8 @@ Model Context Protocol implementation for extensible device tools:
 
 ## Key Design Decisions
 
-1. **No cloud relay** — The only network call is from the device to the Anthropic API. No intermediate servers.
-2. **WebView agent loop** — The agent runs directly in the WebView for instant cold start. No embedded Node.js worker process.
-3. **Native HTTP bypass** — OkHttp (Android) and URLSession (iOS) route LLM API calls through native code to bypass WebView CORS restrictions, with full SSE streaming support.
+1. **Native Rust agent** — All agent logic runs natively for performance and reliability. The WebView is purely a presentation layer.
+2. **No cloud relay** — The only network call is from the device to the Anthropic API. No intermediate servers.
+3. **Thin bridge** — `MobileClawEngine` delegates everything to the native plugin. MCP device tools that need WebView Capacitor APIs (camera, sensors, etc.) are the only JS-side logic.
 4. **MCP for device tools** — Standard protocol means tools written for desktop MCP clients work on mobile with minimal adaptation.
-5. **Pi framework as agent core** — Minimal, proven engine (4 core tools, <1000 token system prompt) that's lightweight enough for mobile.
+5. **UniFFI bindings** — Rust code is exposed to Kotlin (Android) and Swift (iOS) via UniFFI, with the Capacitor bridge providing the final hop to JavaScript.

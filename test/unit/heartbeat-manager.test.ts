@@ -369,8 +369,9 @@ describe('HeartbeatManager', () => {
 
     await manager.handleWake('manual', { force: true })
 
-    // Should have run 2 agent turns: heartbeat + cron job
-    expect(_mockRunCalls.length).toBe(2)
+    // 3 agent turns: heartbeat + isolated cron job + announce-to-main heartbeat
+    // (announce fires because the cron job result is 'ok' and user is idle)
+    expect(_mockRunCalls.length).toBe(3)
 
     const cronRunCall = _mockRunCalls.find((c: any) => c.prompt === 'Run isolated check')
     expect(cronRunCall).toBeDefined()

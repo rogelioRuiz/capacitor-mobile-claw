@@ -256,7 +256,7 @@ describe('B. Dedup Edge Cases', () => {
         everyMs: 1_000,
         prompt: 'Check in',
         lastHash: hash,
-        lastSentAt: now - (24 * 60 * 60 * 1000 - 1),
+        lastSentAt: now - (24 * 60 * 60 * 1000 - 5_000),
       })),
     })
     const { manager, dispatched } = createManager(cronDb)

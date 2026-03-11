@@ -36,9 +36,9 @@ docs/                   # Extended documentation
 ```
 
 Key files:
-- `src/engine.ts` — The core `MobileClawEngine` class
-- `src/definitions.ts` — All TypeScript interfaces
-- `src/services/bridge-protocol.ts` — Bridge message types
+- `src/engine.ts` — `MobileClawEngine` — thin native bridge (~490 lines)
+- `src/definitions.ts` — All TypeScript interfaces and event types
+- `src/mcp/` — MCP server, transports, and device tool types
 
 ## Development Commands
 
@@ -56,8 +56,8 @@ Key files:
 
 ```bash
 cd examples/reference-app
-npm install              # postinstall auto-copies the Node.js worker
-npm run cap:build        # vite build + cap sync + copies iOS builtin_modules
+npm install
+npm run cap:build        # vite build + cap sync
 
 # Android
 npx cap add android      # first time only
@@ -105,7 +105,7 @@ docs: update bridge protocol reference
 chore(deps): update @capacitor/core to 8.2.0
 ```
 
-Scopes: `engine`, `mcp`, `worker`, `tools`, `app`, `docs`, `ci`, `deps`
+Scopes: `engine`, `mcp`, `tools`, `app`, `docs`, `ci`, `deps`
 
 ### 5. Open a pull request
 

@@ -212,6 +212,11 @@ export interface MobileClawInitOptions {
    * When provided, this owns approval, auditing, and any policy checks.
    */
   toolMiddleware?: ToolMiddleware
+  /**
+   * Consumer-owned policy: returns true if tool requires user approval.
+   * Used by cron job middleware to forward approval requests to the main chat.
+   */
+  needsApproval?: (toolName: string) => boolean
 }
 
 export interface StompConfig {

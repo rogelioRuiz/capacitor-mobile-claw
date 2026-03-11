@@ -4,19 +4,21 @@ This file provides context for AI coding assistants working on this codebase.
 
 ## Project Overview
 
-Mobile Claw is a Capacitor plugin (`capacitor-mobile-claw`) that embeds a full AI agent runtime on Android/iOS. The agent loop runs directly in the WebView — no embedded Node.js worker. LLM API calls are routed through native HTTP (OkHttp / URLSession) to bypass CORS. The agent uses the Pi framework by Mario Zechner.
+Mobile Claw is a Capacitor plugin (`capacitor-mobile-claw`) that provides a thin WebView bridge to a native Rust AI agent (`capacitor-native-agent`). ALL agent logic — LLM calls, tool execution, auth, cron/heartbeat, sessions — runs natively in Rust via UniFFI. The WebView layer handles only UI rendering, event display, and MCP device tool coordination.
 
 ## Repository Structure
 
 ```
 src/                    # TypeScript plugin source → compiled to dist/esm/
-  engine.ts             # MobileClawEngine — the core public API class
+  engine.ts             # MobileClawEngine — thin native wrapper (~490 lines)
   definitions.ts        # All TypeScript interfaces and event types
   plugin.ts             # Capacitor WebPlugin wrapper
-  services/             # Bridge protocol message types
+  agent/                # Minimal agent helpers
+    resource-quotas.ts  # Per-session tool call limiter
+    workspace-init.ts   # Workspace dirs, default files, system prompt
   mcp/                  # MCP server, transports, and tool types
-examples/reference-app/ # Vue 3 demo app (private, not published)
-test/e2e/               # E2E test files
+  services/             # Bridge protocol message types
+test/                   # Unit and E2E tests (excluded from tsc)
 docs/                   # Extended documentation
 ```
 
@@ -27,17 +29,16 @@ npm install             # Install dependencies
 npm run build           # TypeScript → dist/esm/
 npm run typecheck       # tsc --noEmit
 npm test                # Vitest unit tests
-npm run test:e2e        # E2E tests (needs ANTHROPIC_API_KEY)
 npm run lint            # Biome check
 npm run lint:fix        # Biome auto-fix
 ```
 
 ## Key Architecture
 
-- **Agent loop**: Runs in WebView, not a separate worker process
-- **Native HTTP**: OkHttp (Android) / URLSession (iOS) bypass CORS for LLM API calls
+- **Native agent**: `capacitor-native-agent` (Rust FFI) owns agent loop, LLM streaming, tool execution, auth, sessions, cron/heartbeat
+- **Thin bridge**: `engine.ts` delegates ALL logic to the native plugin, handles only event dispatch and MCP coordination
 - **MCP transports**: Bridge (in-process IPC, default) and STOMP (remote WebSocket, opt-in)
-- **Pi framework**: `@mariozechner/pi-ai` and `@mariozechner/pi-agent-core` power the agent loop
+- **Device tools**: MCP tools that need WebView Capacitor APIs stay in JS
 
 ## Coding Conventions
 

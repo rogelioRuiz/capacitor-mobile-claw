@@ -1,32 +1,22 @@
 /**
- * MobileClawEngine — Framework-agnostic core engine.
+ * MobileClawEngine — Thin presentation-only wrapper.
  *
- * Runs entirely in the WebView. No Node.js worker dependency.
- * All tools (file I/O, git, code execution) run natively via
- * Capacitor plugins or WebAssembly.
+ * ALL agent logic (LLM calls, tool execution, auth, cron/heartbeat, sessions)
+ * runs natively in Rust via the NativeAgent Capacitor plugin. This class is
+ * purely the WebView-side event bridge and UI coordinator.
  *
- * Tool policy is consumer-owned. Consumers can keep using the legacy
- * pre-execution hook or provide tool middleware that wraps execution.
+ * What lives here:
+ *   - Event dispatch (local listeners for UI rendering)
+ *   - MCP server manager (device tools need WebView Capacitor APIs)
+ *   - MobileCron registration (native wake timer scheduling)
+ *   - OAuth code exchange (CapacitorHttp)
  *
- * No Vue, React, or any UI framework dependency.
+ * What does NOT live here:
+ *   - Agent loop, LLM streaming, tool execution, auth store, session store,
+ *     cron evaluation, heartbeat — all in Rust.
  */
 
 import { Capacitor } from '@capacitor/core'
-import { AgentRunner, type PreExecuteResult } from './agent/agent-runner'
-import {
-  deleteAuth as deleteAuthNative,
-  getAuthStatus as getAuthStatusNative,
-  getAuthToken,
-  setAuthKey as setAuthKeyNative,
-  setAuthRoot,
-} from './agent/auth-store'
-import { CronDbAccess } from './agent/cron-db-access'
-import { readFileNative, setWorkspaceRoot, writeFileNative } from './agent/file-tools'
-import { setWorkspaceDir } from './agent/git-tools'
-import { HeartbeatManager } from './agent/heartbeat-manager'
-import { SessionStore } from './agent/session-store'
-import { ToolProxy } from './agent/tool-proxy'
-import { getModels as getModelsNative, initWorkspace, loadSystemPrompt } from './agent/workspace-init'
 import type {
   AuthStatus,
   CronJobInput,
@@ -45,12 +35,23 @@ import type {
   SessionInfo,
   SessionListResult,
   ToolInvokeResult,
-  ToolMiddleware,
 } from './definitions'
 import { McpServerManager, type McpServerOptions } from './mcp/mcp-server-manager'
 
 type MessageHandler = (msg: any) => void
-type AgentTool = import('@mariozechner/pi-agent-core').AgentTool<any>
+
+/**
+ * Get the NativeAgent plugin synchronously.
+ * IMPORTANT: Never await a Capacitor registerPlugin proxy — it returns a
+ * Proxy with a .then trap that hangs forever. Always access synchronously.
+ * We access via Capacitor.Plugins which is already registered by the native
+ * plugin's Android/iOS code — no need to import the npm package.
+ */
+function getNativeAgent(): any {
+  const g = globalThis as any
+  g.__nativeAgentPlugin ??= (Capacitor as any).Plugins.NativeAgent
+  return g.__nativeAgentPlugin
+}
 
 export class MobileClawEngine {
   // ── State ──────────────────────────────────────────────────────────────
@@ -68,22 +69,8 @@ export class MobileClawEngine {
   private initPromise: Promise<MobileClawReadyInfo> | null = null
   private _mcpManager: McpServerManager | null = null
   private _mobileCron: any = null
-
-  // ── Agent ──────────────────────────────────────────────────────────────
+  // ── Skill state (UI bridge only — agent loop is in Rust) ────────────
   private _activeSkillId: string | null = null
-  private _skillAgent: any = null // Pi Agent instance for active skill (persists across turns)
-  private _skillSessionKey: string | null = null
-  private _skillEndRequested = false
-  private _agentRunner: AgentRunner | null = null
-  private _toolProxy: ToolProxy | null = null
-  private _sessionStore: SessionStore | null = null
-  private _cronDb: CronDbAccess | null = null
-  private _heartbeatManager: HeartbeatManager | null = null
-  private _extraAgentTools: AgentTool[] = []
-  private _toolMiddleware?: ToolMiddleware
-  private _webViewFetchProxyInstalled = false
-  /** Pending pre-execute resolvers keyed by toolCallId */
-  private _preExecuteResolvers = new Map<string, (result: PreExecuteResult) => void>()
 
   // ── Public getters ─────────────────────────────────────────────────────
 
@@ -115,25 +102,16 @@ export class MobileClawEngine {
   get loadingPhase(): string {
     return this._loadingPhase
   }
-
-  /** Access the MCP server manager for status, restart, etc. */
   get mcpManager(): McpServerManager | null {
     return this._mcpManager
   }
-
-  /** @deprecated Always true — the WebView agent is the only agent. */
+  /** @deprecated Always true. */
   get useWebViewAgent(): boolean {
     return true
   }
-
-  /** Access the agent runner. */
-  get agentRunner(): AgentRunner | null {
-    return this._agentRunner
-  }
-
-  /** Query cron run history from SQLite. */
-  async listCronRuns(opts?: { jobId?: string; limit?: number }) {
-    return this._cronDb?.listCronRuns(opts) ?? []
+  /** @deprecated Agent runner is in Rust. */
+  get agentRunner(): null {
+    return null
   }
 
   // ── Lifecycle ──────────────────────────────────────────────────────────
@@ -157,74 +135,34 @@ export class MobileClawEngine {
 
     try {
       this._available = true
+      const plugin = getNativeAgent()
 
-      // ── Workspace initialization (creates dirs + default files) ──────
+      // ── Initialize workspace (creates dirs + default files) ──────────
+      const { initWorkspace } = await import('./agent/workspace-init')
       const { openclawRoot } = await initWorkspace()
       this._openclawRoot = openclawRoot
 
-      // Configure native tools with workspace paths
-      setWorkspaceRoot(`${openclawRoot}/workspace`)
-      setWorkspaceDir(`/${openclawRoot}/workspace`)
-      setAuthRoot(openclawRoot)
+      this._loadingPhase = 'initializing native agent'
 
-      this._loadingPhase = 'setting up agent'
-
-      // ── Fetch proxy (native HTTP for CORS bypass) ───────────────────
-      await this._installWebViewFetchProxy()
-
-      // ── Tool proxy (all tools run natively now) ─────────────────────
-      this._toolProxy = new ToolProxy()
-      this._extraAgentTools = this._buildExtraAgentTools(options.tools)
-
-      // ── Session store (SQLite) ──────────────────────────────────────
-      this._sessionStore = new SessionStore()
-
-      // ── Tool middleware ─────────────────────────────────────────────
-      this._toolMiddleware = options.toolMiddleware
-
-      // ── Agent runner ────────────────────────────────────────────────
-      this._agentRunner = new AgentRunner({
-        dispatch: (msg) => this._dispatch(msg),
-        toolProxy: this._toolProxy,
-        toolMiddleware: this._toolMiddleware,
-        preExecuteHook: this._toolMiddleware
-          ? undefined
-          : (toolCallId, toolName, args, signal) => this._handlePreExecute(toolCallId, toolName, args, signal),
+      // ── Initialize native agent handle ───────────────────────────────
+      // Use files:// prefix so Kotlin plugin resolves to context.filesDir
+      await plugin.initialize({
+        dbPath: `files://${openclawRoot}/mobile-claw.db`,
+        workspacePath: `files://${openclawRoot}/workspace`,
+        authProfilesPath: `files://${openclawRoot}/agents/main/agent/auth-profiles.json`,
       })
 
-      // Auto-save session to SQLite on agent completion
-      this._onMessage('agent.completed', (msg) => {
-        if (!this._sessionStore || !this._agentRunner?.currentAgent) return
-        const agent = this._agentRunner.currentAgent
-        const sessionKey = msg.sessionKey || this._currentSessionKey
-        if (!sessionKey) return
-        this._sessionStore
-          .saveSession({
-            sessionKey,
-            agentId: 'main',
-            messages: agent.state.messages as any[],
-            model: msg.model,
-            startTime: msg.durationMs ? Date.now() - msg.durationMs : Date.now(),
-          })
-          .catch((err: any) => {
-            console.warn('[MobileClaw] Session save failed:', err?.message)
-          })
+      // ── Bridge native events to local listeners ──────────────────────
+      await plugin.addListener('nativeAgentEvent', (event: { eventType: string; payloadJson: string }) => {
+        try {
+          const payload = JSON.parse(event.payloadJson)
+          this._handleNativeEvent(event.eventType, payload)
+        } catch {
+          this._handleNativeEvent(event.eventType, { raw: event.payloadJson })
+        }
       })
 
-      // ── Cron / heartbeat ────────────────────────────────────────────
-      this._cronDb = new CronDbAccess()
-      this._heartbeatManager = new HeartbeatManager({
-        dispatch: (msg) => this._dispatch(msg),
-        toolProxy: this._toolProxy,
-        cronDb: this._cronDb,
-        getAuth: async (provider, _agentId) => getAuthToken(provider, _agentId),
-        getSystemPrompt: async () => ({ systemPrompt: await loadSystemPrompt() }),
-        isUserAgentRunning: () => this._agentRunner?.isRunning ?? false,
-        getCurrentSessionKey: () => this._currentSessionKey,
-        extraTools: this._extraAgentTools,
-      })
-
-      // ── MCP server ─────────────────────────────────────────────────
+      // ── MCP server (device tools — need WebView Capacitor APIs) ──────
       this._loadingPhase = 'starting MCP'
       try {
         this._mcpManager = new McpServerManager()
@@ -236,16 +174,22 @@ export class MobileClawEngine {
         await this._mcpManager.start(mcpOpts)
         this._mcpToolCount = this._mcpManager.toolCount
         console.log(`[MobileClaw] MCP server started — ${this._mcpToolCount} tools`)
+
+        // Register MCP tools with native agent so Rust knows about them
+        if (this._mcpToolCount > 0) {
+          const toolsJson = JSON.stringify((this._mcpManager as any).getToolSchemas?.() ?? [])
+          await plugin.startMcp({ toolsJson }).catch(() => {})
+        }
       } catch (mcpErr) {
         console.warn('[MobileClaw] MCP bridge start failed (non-fatal):', mcpErr)
       }
 
-      // ── MobileCron ─────────────────────────────────────────────────
+      // ── MobileCron (native wake timer) ───────────────────────────────
       await this._initMobileCron(options.mobileCron).catch((err) => {
         console.warn('[MobileClaw] MobileCron init failed (non-fatal):', err)
       })
 
-      // ── Ready ──────────────────────────────────────────────────────
+      // ── Ready ────────────────────────────────────────────────────────
       this._ready = true
       this._loading = false
       this._loadingPhase = 'ready'
@@ -257,9 +201,7 @@ export class MobileClawEngine {
         mcpToolCount: this._mcpToolCount,
       }
 
-      // Emit worker.ready for backward compat with UI listeners
       this._dispatch({ type: 'worker.ready', ...readyInfo })
-
       return readyInfo
     } catch (e: any) {
       this._available = false
@@ -268,6 +210,69 @@ export class MobileClawEngine {
       return { nodeVersion: '', openclawRoot: '', mcpToolCount: 0 }
     }
   }
+
+  // ── Native event → local dispatch bridge ──────────────────────────────
+
+  private _handleNativeEvent(eventType: string, payload: any): void {
+    switch (eventType) {
+      case 'text_delta':
+        this._dispatch({ type: 'agent.event', eventType: 'text_delta', data: { text: payload.text } })
+        break
+      case 'thinking':
+        this._dispatch({ type: 'agent.event', eventType: 'thinking', data: { text: payload.text } })
+        break
+      case 'tool_use':
+        this._dispatch({ type: 'agent.event', eventType: 'tool_use', data: payload })
+        break
+      case 'tool_result':
+        this._dispatch({ type: 'agent.event', eventType: 'tool_result', data: payload })
+        break
+      case 'user_message':
+        this._dispatch({ type: 'agent.event', eventType: 'user_message', data: payload })
+        break
+      case 'agent.completed':
+        this._dispatch({ type: 'agent.completed', ...payload })
+        break
+      case 'agent.error':
+        this._dispatch({ type: 'agent.error', ...payload })
+        break
+      case 'approval_request':
+        this._dispatch({ type: 'tool.pre_execute', ...payload })
+        break
+      case 'retry':
+        this._dispatch({ type: 'agent.event', eventType: 'retry', data: payload })
+        break
+      case 'heartbeat.started':
+        this._dispatch({ type: 'heartbeat.started', ...payload })
+        break
+      case 'heartbeat.completed':
+        this._dispatch({ type: 'heartbeat.completed', ...payload })
+        break
+      case 'heartbeat.skipped':
+        this._dispatch({ type: 'heartbeat.skipped', ...payload })
+        break
+      case 'cron.job.started':
+        this._dispatch({ type: 'cron.job.started', ...payload })
+        break
+      case 'cron.job.completed':
+        this._dispatch({ type: 'cron.job.completed', ...payload })
+        break
+      case 'cron.job.error':
+        this._dispatch({ type: 'cron.job.error', ...payload })
+        break
+      case 'cron.notification':
+        this._dispatch({ type: 'cron.notification', ...payload })
+        break
+      case 'scheduler.status':
+        this._dispatch({ type: 'scheduler.status', ...payload })
+        break
+      default:
+        this._dispatch({ type: eventType, ...payload })
+        break
+    }
+  }
+
+  // ── MobileCron initialization ─────────────────────────────────────────
 
   private async _initMobileCron(preloaded?: any): Promise<void> {
     let MobileCron: any
@@ -281,50 +286,36 @@ export class MobileClawEngine {
         return
       }
     }
-    // Vite stubs optional peer deps as empty objects -- bail if real plugin missing
     if (!MobileCron || typeof MobileCron.register !== 'function') return
     this._mobileCron = MobileCron
 
-    const schedulerConfig = await this.getSchedulerConfig()
-    if (schedulerConfig.scheduler.enabled) {
+    const configResult = await this.getSchedulerConfig()
+    if (configResult.scheduler.enabled) {
       await MobileCron.register({
         name: 'sentinel-heartbeat',
         schedule: {
           kind: 'every',
-          everyMs: schedulerConfig.heartbeat.everyMs || 1_800_000,
+          everyMs: configResult.heartbeat.everyMs || 1_800_000,
         },
-        activeHours: schedulerConfig.heartbeat.activeHours,
+        activeHours: configResult.heartbeat.activeHours,
         priority: 'normal',
         requiresNetwork: true,
       })
       await MobileCron.setMode({
-        mode: schedulerConfig.scheduler.schedulingMode,
+        mode: configResult.scheduler.schedulingMode,
       })
     }
 
+    // Route MobileCron wake events to native agent
     MobileCron.addListener('jobDue', (event: any) => {
-      if (this._heartbeatManager) {
-        this._heartbeatManager.handleWake(event?.source || 'mobilecron').catch((err) => {
-          console.warn('[MobileClaw] Heartbeat wake failed:', err?.message)
-        })
-      }
+      this.triggerHeartbeatWake(event?.source || 'mobilecron').catch(() => {})
     })
-
     MobileCron.addListener('nativeWake', (event: any) => {
-      if (this._heartbeatManager) {
-        this._heartbeatManager.handleWake(event?.source || 'workmanager').catch((err) => {
-          console.warn('[MobileClaw] Native wake failed:', err?.message)
-        })
-      }
+      this.triggerHeartbeatWake(event?.source || 'workmanager').catch(() => {})
     })
-
     MobileCron.addListener('overdueJobs', (event: any) => {
       this._dispatch({ type: 'scheduler.overdue', ...event })
-      if (this._heartbeatManager) {
-        this._heartbeatManager.handleWake('foreground').catch((err) => {
-          console.warn('[MobileClaw] Foreground catch-up wake failed:', err?.message)
-        })
-      }
+      this.triggerHeartbeatWake('foreground').catch(() => {})
     })
 
     this._onMessage('scheduler.status', (msg) => {
@@ -337,11 +328,68 @@ export class MobileClawEngine {
     return { ready: this._ready }
   }
 
-  // ── Internal messaging (local dispatch only, no worker bridge) ──────
+  // ── Agent control ──────────────────────────────────────────────────────
+
+  async sendMessage(
+    prompt: string,
+    _agentId = 'main',
+    options?: { model?: string; provider?: string },
+  ): Promise<{ sessionKey: string }> {
+    const plugin = getNativeAgent()
+
+    if (!this._currentSessionKey) {
+      this._currentSessionKey = `session-${Date.now()}`
+    }
+    const sessionKey = this._currentSessionKey
+
+    const { loadSystemPrompt } = await import('./agent/workspace-init')
+    const systemPrompt = await loadSystemPrompt()
+
+    await plugin.sendMessage({
+      prompt,
+      sessionKey,
+      model: options?.model,
+      provider: options?.provider || 'anthropic',
+      systemPrompt,
+      maxTurns: 25,
+    })
+
+    return { sessionKey }
+  }
+
+  async stopTurn(): Promise<void> {
+    await getNativeAgent().abort()
+  }
+
+  async steerAgent(text: string): Promise<void> {
+    await getNativeAgent().steer({ text })
+  }
 
   /**
-   * @deprecated No worker to send to. Use dispatchEvent() for local events.
-   * Kept for backward compat — routes pre_execute results locally.
+   * Respond to a tool approval request (from native agent).
+   */
+  async respondToPreExecute(
+    toolCallId: string,
+    _args: Record<string, unknown>,
+    deny?: boolean,
+    denyReason?: string,
+  ): Promise<void> {
+    await getNativeAgent().respondToApproval({
+      toolCallId,
+      approved: !deny,
+      reason: denyReason,
+    })
+  }
+
+  /** Respond to a cron approval request. */
+  respondToCronApproval(requestId: string, approved: boolean): void {
+    getNativeAgent()
+      .respondToCronApproval({ requestId, approved })
+      .catch(() => {})
+  }
+
+  /**
+   * @deprecated Use respondToPreExecute. Kept for backward compat.
    */
   async send(message: Record<string, unknown>): Promise<void> {
     if (message.type === 'tool.pre_execute.result') {
@@ -353,664 +401,8 @@ export class MobileClawEngine {
         denyReason as string | undefined,
       )
     }
-
-    if (message.type === 'skill.start') {
-      console.log(`[Skill] skill.start received skill=${message.skill}`)
-      this._handleSkillStart(message).catch((err) => {
-        this._dispatch({ type: 'agent.error', error: err.message || 'Skill start failed' })
-      })
-      return
-    }
-
-    if (message.type === 'skill.end') {
-      console.log(`[Skill] skill.end received activeSkill=${this._activeSkillId}`)
-      if (this._activeSkillId) {
-        this._endSkill(this._activeSkillId, this._skillSessionKey || '')
-      }
-      return
-    }
-
-    // Route skill.tool_result to local listeners (waitForResult tools listen for this)
-    if (message.type === 'skill.tool_result') {
-      console.log(`[Skill] skill.tool_result routed requestId=${(message as any).requestId}`)
-      this._dispatch(message as any)
-      return
-    }
-
-    // No worker to send to — dispatch locally for any listeners
+    // Route other messages locally
     this._dispatch(message as any)
-  }
-
-  /**
-   * Handle a skill.start message: create a persistent skill agent with the
-   * skill's custom system prompt, tools, and kickoff. The agent stays alive
-   * across turns so follow-up messages reuse it (same as old worker's
-   * currentAgent pattern).
-   */
-  private async _handleSkillStart(message: Record<string, unknown>): Promise<void> {
-    const skillId = (message.skill as string) || 'unknown'
-    const config = message.config as any
-    console.log(`[Skill] _handleSkillStart skillId=${skillId}`)
-    if (!config?.systemPrompt || !config?.kickoff) {
-      console.warn(`[Skill] skill "${skillId}" missing systemPrompt or kickoff — aborting`)
-      this._dispatch({ type: 'agent.error', error: `Skill "${skillId}" missing systemPrompt or kickoff in config` })
-      return
-    }
-
-    // Guard: end any active skill before starting a new one
-    if (this._activeSkillId) {
-      console.warn(
-        `[Skill] concurrent guard: ending active skill="${this._activeSkillId}" before starting "${skillId}"`,
-      )
-      this._endSkill(this._activeSkillId, this._skillSessionKey || '')
-    }
-
-    // Force a new session for the skill
-    const sessionKey = `${skillId}/${Date.now()}`
-    this._currentSessionKey = sessionKey
-    this._skillEndRequested = false
-    console.log(`[Skill] sessionKey=${sessionKey}`)
-
-    // ── Generic flag-based tool builder ─────────────────────────────────
-    // Skills declare behavior via flags on tool definitions:
-    //   milestone: true       → track milestone, dispatch {skillId}.milestone
-    //   bridgeEvent: string   → dispatch event to UI
-    //   waitForResult: true   → suspend until skill.tool_result arrives
-    //   endsSkill: true       → defer _endSkill() to after turn completes
-    //   execute: fn           → custom handler provided by skill
-    const milestones: string[] = config.milestones || []
-    const milestonesReached = new Set<string>()
-
-    const toToolResult = (result: Record<string, unknown>) => ({
-      content: [{ type: 'text' as const, text: JSON.stringify(result) }],
-      details: result,
-    })
-
-    // Context passed to custom execute functions
-    const ctx = {
-      dispatch: (event: any) => this._dispatch(event),
-      writeFile: (path: string, content: string) => writeFileNative({ path, content }),
-      readFile: (path: string) => readFileNative({ path }),
-      skillId,
-      sessionKey,
-    }
-
-    const skillTools = (config.tools || []).map((toolDef: any) => {
-      const base = {
-        name: toolDef.name,
-        label: toolDef.name.replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase()),
-        description: toolDef.description || '',
-        parameters: toolDef.input_schema || toolDef.inputSchema || { type: 'object', properties: {} },
-      } as any
-
-      // milestone tools — validate, track in Set, dispatch progress
-      if (toolDef.milestone) {
-        base.execute = async (_id: string, params: Record<string, unknown>) => {
-          const m = params.milestone as string
-          if (milestones.includes(m)) {
-            milestonesReached.add(m)
-            console.log(`[Skill] milestone=${m} valid=true count=${milestonesReached.size}`)
-            this._dispatch({ type: `${skillId}.milestone`, milestone: m, completedCount: milestonesReached.size })
-          }
-          return toToolResult({ success: true, milestone: m, completedCount: milestonesReached.size })
-        }
-        return base
-      }
-
-      // custom execute — skill provides its own handler
-      if (typeof toolDef.execute === 'function') {
-        base.execute = async (_id: string, params: Record<string, unknown>) => {
-          console.log(`[Skill] custom execute tool=${toolDef.name} endsSkill=${!!toolDef.endsSkill}`)
-          const result = await toolDef.execute(params, ctx)
-          if (toolDef.endsSkill) this._skillEndRequested = true
-          return toToolResult(result || {})
-        }
-        return base
-      }
-
-      // bridgeEvent + waitForResult — dispatch event, suspend until UI responds
-      if (toolDef.bridgeEvent && toolDef.waitForResult) {
-        const eventType = toolDef.bridgeEvent
-        base.execute = async (_id: string, params: Record<string, unknown>) => {
-          const requestId = `${toolDef.name}-${Date.now()}-${Math.random().toString(36).slice(2)}`
-          console.log(`[Skill] waitForResult tool=${toolDef.name} requestId=${requestId} event=${eventType}`)
-          return new Promise<ReturnType<typeof toToolResult>>((resolve) => {
-            this._onMessage(
-              'skill.tool_result',
-              (msg: any) => {
-                if (msg.requestId === requestId) {
-                  console.log(`[Skill] waitForResult resolved tool=${toolDef.name} requestId=${requestId}`)
-                  if (toolDef.endsSkill) this._skillEndRequested = true
-                  resolve(toToolResult(msg.result || {}))
-                }
-              },
-              { once: true },
-            )
-            this._dispatch({ type: eventType, requestId, ...params })
-          })
-        }
-        return base
-      }
-
-      // bridgeEvent (fire-and-forget) — dispatch event, return success
-      if (toolDef.bridgeEvent) {
-        const eventType = toolDef.bridgeEvent
-        base.execute = async (_id: string, params: Record<string, unknown>) => {
-          console.log(`[Skill] bridgeEvent tool=${toolDef.name} event=${eventType}`)
-          this._dispatch({ type: eventType, ...params })
-          if (toolDef.endsSkill) this._skillEndRequested = true
-          return toToolResult({ success: true, applied: true })
-        }
-        return base
-      }
-
-      // endsSkill only (no bridgeEvent, no execute) — dispatch generic event + defer end
-      if (toolDef.endsSkill) {
-        base.execute = async (_id: string, params: Record<string, unknown>) => {
-          console.log(`[Skill] endsSkill tool=${toolDef.name}`)
-          this._dispatch({ type: `${skillId}.${toolDef.name}`, ...params })
-          this._skillEndRequested = true
-          return toToolResult(params)
-        }
-        return base
-      }
-
-      // Generic fallback — dispatch event, return params
-      base.execute = async (_id: string, params: Record<string, unknown>) => {
-        this._dispatch({ type: `${skillId}.${toolDef.name}`, ...params, skillId, toolName: toolDef.name })
-        return toToolResult(params)
-      }
-      return base
-    })
-
-    console.log(`[Skill] built ${skillTools.length} skill tools: ${skillTools.map((t: any) => t.name).join(', ')}`)
-
-    // Activate skill mode — _dispatch will tag agent events with this ID.
-    // Stays set until _endSkill() is called (NOT cleared on agent.completed,
-    // so follow-up turns keep their skill tags).
-    this._activeSkillId = skillId
-    this._skillSessionKey = sessionKey
-
-    // Notify that the skill session is starting
-    this._dispatch({ type: 'skill.session_started', skillId, sessionKey })
-
-    const provider = (message.provider as string) || 'anthropic'
-    try {
-      const [authResult] = await Promise.all([getAuthToken(provider, 'main')])
-      console.log(`[Skill] auth for provider="${provider}" hasKey=${!!authResult.apiKey}`)
-      if (!authResult.apiKey) {
-        this._endSkill(skillId, sessionKey)
-        this._dispatch({
-          type: 'agent.error',
-          error: `No API key configured for provider "${provider}". Go to Settings to add one.`,
-        })
-        return
-      }
-
-      const [{ getModel }, { Agent }] = await Promise.all([
-        import('@mariozechner/pi-ai'),
-        import('@mariozechner/pi-agent-core'),
-      ])
-      const modelId = 'claude-sonnet-4-5'
-      const model = (getModel as any)(provider, modelId)
-
-      // Skill tools win on name conflict (same as old worker's setupNames filter).
-      // Base/MCP tools get pre-execute hook wrapping; skill tools do NOT.
-      const skillNames = new Set(skillTools.map((t: any) => t.name))
-      const filteredExtra = (this._extraAgentTools || [])
-        .filter((t: any) => !skillNames.has(t.name))
-        .map((t: any) => this._wrapToolWithPreExecute(t))
-      const tools = [...skillTools, ...filteredExtra]
-      console.log(
-        `[Skill] agent created model=${modelId}, ${skillTools.length} skill + ${filteredExtra.length} base = ${tools.length} tools`,
-      )
-
-      const agent = new (Agent as any)({
-        initialState: { systemPrompt: config.systemPrompt, model, tools, thinkingLevel: 'off' },
-        convertToLlm: (messages: any[]) =>
-          messages.filter((m: any) => m.role === 'user' || m.role === 'assistant' || m.role === 'toolResult'),
-        getApiKey: () => authResult.apiKey,
-      })
-
-      // Permanent subscription — tags events with skill context across ALL turns.
-      // Guard: ignore events if this agent's session is no longer active (concurrent guard ended it).
-      const mySessionKey = sessionKey
-      agent.subscribe((event: any) => {
-        if (this._skillSessionKey !== mySessionKey) {
-          console.warn(`[Skill] stale session guard dropping event type=${event.type}`)
-          return
-        }
-        switch (event.type) {
-          case 'message_update': {
-            const e = event.assistantMessageEvent
-            if (e.type === 'text_delta') {
-              this._dispatch({ type: 'agent.event', eventType: 'text_delta', data: { text: e.delta } })
-            }
-            if (e.type === 'thinking_delta') {
-              this._dispatch({ type: 'agent.event', eventType: 'thinking', data: { text: e.delta } })
-            }
-            break
-          }
-          case 'tool_execution_start':
-            this._dispatch({
-              type: 'agent.event',
-              eventType: 'tool_use',
-              data: { toolName: event.toolName, toolCallId: event.toolCallId, args: event.args },
-            })
-            break
-          case 'tool_execution_end':
-            this._dispatch({
-              type: 'agent.event',
-              eventType: 'tool_result',
-              data: { toolName: event.toolName, toolCallId: event.toolCallId, result: event.result },
-            })
-            break
-        }
-      })
-
-      // Store for follow-up reuse (same as old worker's currentAgent = agent)
-      this._skillAgent = agent
-
-      // Run first turn (kickoff) — no user_message echo for internal instruction
-      console.log(`[Skill] running kickoff promptLen=${config.kickoff.length}`)
-      await this._runSkillTurn(agent, config.kickoff, sessionKey, modelId, false)
-    } catch (err: any) {
-      console.error(`[Skill] _handleSkillStart error: ${err.message}`)
-      this._endSkill(skillId, sessionKey)
-      this._dispatch({ type: 'agent.error', error: err.message || 'Skill agent failed' })
-    }
-  }
-
-  /**
-   * Run a single turn on the skill agent (kickoff or follow-up).
-   * Mirrors the old worker's agent.prompt() + waitForIdle() pattern.
-   */
-  private async _runSkillTurn(
-    agent: any,
-    prompt: string,
-    sessionKey: string,
-    modelId: string,
-    echoUserMessage: boolean,
-  ): Promise<void> {
-    console.log(`[Skill] _runSkillTurn promptLen=${prompt.length} sessionKey=${sessionKey} echo=${echoUserMessage}`)
-    if (echoUserMessage) {
-      this._dispatch({
-        type: 'agent.event',
-        eventType: 'user_message',
-        data: { text: prompt, sessionKey },
-      })
-    }
-
-    const startTime = Date.now()
-    try {
-      await agent.prompt(prompt)
-      await agent.waitForIdle()
-      console.log(`[Skill] waitForIdle completed durationMs=${Date.now() - startTime}`)
-
-      // Guard: skill was ended (e.g. by concurrent guard) while we were waiting
-      if (this._skillSessionKey !== sessionKey) {
-        console.warn(`[Skill] _runSkillTurn stale session guard after waitForIdle`)
-        return
-      }
-
-      if (agent.state?.error) {
-        console.error('[MobileClaw] skill agent error:', agent.state.error)
-      }
-
-      console.log(`[Skill] agent.completed dispatched durationMs=${Date.now() - startTime}`)
-      this._dispatch({
-        type: 'agent.completed',
-        sessionKey,
-        model: modelId,
-        durationMs: Date.now() - startTime,
-      })
-
-      // Deferred skill end — if a tool set _skillEndRequested, end now
-      // (after agent.completed so all events retain their skill tag)
-      if (this._skillEndRequested && this._activeSkillId) {
-        console.log(`[Skill] deferred _endSkill triggered skillId=${this._activeSkillId}`)
-        this._skillEndRequested = false
-        this._endSkill(this._activeSkillId, sessionKey)
-      }
-    } catch (err: any) {
-      // Guard: ignore errors from aborted/ended skill turns
-      if (this._skillSessionKey !== sessionKey) {
-        console.warn(`[Skill] _runSkillTurn stale session guard in catch — ignoring error: ${err.message}`)
-        return
-      }
-      console.error(`[Skill] _runSkillTurn error: ${err.message}`)
-      this._dispatch({
-        type: 'agent.error',
-        error: err.message || 'Skill turn failed',
-        retryable: err.status === 429 || err.status === 529,
-      })
-    }
-  }
-
-  /** Clear skill state and notify UI */
-  private _endSkill(skillId: string, sessionKey: string): void {
-    console.log(`[Skill] _endSkill skillId=${skillId} sessionKey=${sessionKey} hadAgent=${!!this._skillAgent}`)
-    // Abort any in-progress agent turn to prevent stale events
-    if (this._skillAgent) {
-      try {
-        this._skillAgent.abort()
-      } catch (_) {
-        /* ignore */
-      }
-    }
-    this._activeSkillId = null
-    this._skillAgent = null
-    this._skillSessionKey = null
-    this._skillEndRequested = false
-    // Reset session key so the next sendMessage creates a fresh main session
-    // instead of reusing the skill's session key.
-    this._currentSessionKey = null
-    this._dispatch({ type: 'skill.ended', skillId, sessionKey })
-  }
-
-  /**
-   * Wrap a single tool with the pre-execute hook (approval gate).
-   * Used for base/MCP tools in skill mode — skill-specific tools skip this.
-   */
-  private _wrapToolWithPreExecute(tool: any): any {
-    if (!this._toolMiddleware) return tool
-    const middleware = this._toolMiddleware
-    return {
-      ...tool,
-      execute: async (toolCallId: string, args: Record<string, unknown>, signal?: AbortSignal, onUpdate?: any) => {
-        const execute = (nextArgs?: Record<string, unknown>) =>
-          tool.execute(toolCallId, nextArgs ?? args, signal, onUpdate)
-        return middleware({ name: tool.name, toolCallId, args }, execute, signal)
-      },
-    }
-  }
-
-  /** Internal message listener (returns unsubscribe fn) */
-  private _onMessage(type: string, handler: MessageHandler, opts: { once?: boolean } = {}): () => void {
-    if (!this.listeners.has(type)) {
-      this.listeners.set(type, new Set())
-    }
-    const wrapped = opts.once
-      ? (msg: any) => {
-          this.listeners.get(type)?.delete(wrapped)
-          handler(msg)
-        }
-      : handler
-    this.listeners.get(type)?.add(wrapped)
-    return () => this.listeners.get(type)?.delete(wrapped)
-  }
-
-  private _dispatch(msg: any): void {
-    // Tag agent events with active skill ID so consumers can filter
-    if (this._activeSkillId && !msg.skill) {
-      const agentTypes = [
-        'agent.event',
-        'agent.completed',
-        'agent.error',
-        'agent.started',
-        'tool.pre_execute',
-        'tool.pre_execute.result',
-        'tool.pre_execute.expired',
-      ]
-      if (agentTypes.includes(msg.type)) {
-        msg.skill = this._activeSkillId
-        // Only log non-text_delta tags to avoid flooding
-        if (msg.eventType !== 'text_delta' && msg.eventType !== 'thinking') {
-          console.log(`[Skill] tagged ${msg.type} skill=${this._activeSkillId}`)
-        }
-      }
-    }
-    // Type-specific handlers
-    const handlers = this.listeners.get(msg.type)
-    if (handlers) {
-      for (const h of handlers) {
-        try {
-          h(msg)
-        } catch (e) {
-          console.error('[MobileClaw] handler error:', e)
-        }
-      }
-    }
-    // Wildcard handlers
-    const wildcards = this.listeners.get('*')
-    if (wildcards) {
-      for (const h of wildcards) {
-        try {
-          h(msg)
-        } catch (e) {
-          console.error('[MobileClaw] wildcard error:', e)
-        }
-      }
-    }
-  }
-
-  // ── Agent control ──────────────────────────────────────────────────────
-
-  async sendMessage(
-    prompt: string,
-    agentId = 'main',
-    options?: { model?: string; provider?: string },
-  ): Promise<{ sessionKey: string }> {
-    // Skill agent path: reuse the persistent skill agent for follow-ups
-    // (same as old worker's currentAgent.prompt(msg.prompt) in agent.start handler)
-    if (this._skillAgent && this._activeSkillId && this._skillSessionKey) {
-      const sessionKey = this._skillSessionKey
-      const modelId = (this._skillAgent.state?.model as any)?.id || 'claude-sonnet-4-5'
-      console.log(`[Skill] sendMessage follow-up skillId=${this._activeSkillId} promptLen=${prompt.length}`)
-
-      // Auto-abort in-flight turn before sending new message
-      if (this._skillAgent.state.isStreaming) {
-        console.warn(`[Skill] sendMessage auto-abort: skill agent is streaming`)
-        this._skillAgent.abort()
-        await this._skillAgent.waitForIdle()
-        this._dispatch({
-          type: 'agent.event',
-          eventType: 'interrupted',
-          data: { reason: 'New message sent while streaming' },
-        })
-      }
-
-      // Fire and forget — events dispatch through the permanent subscription
-      this._runSkillTurn(this._skillAgent, prompt, sessionKey, modelId, true).catch((err) => {
-        this._dispatch({ type: 'agent.error', error: err.message })
-      })
-      return { sessionKey }
-    }
-
-    // Regular agent path
-    if (!this._currentSessionKey) {
-      this._currentSessionKey = `session-${Date.now()}`
-    }
-
-    const sessionKey = this._currentSessionKey
-
-    if (this._agentRunner) {
-      // Follow-up on existing conversation
-      if (this._agentRunner.currentAgent && this._agentRunner.sessionKey === sessionKey) {
-        this._agentRunner.followUp(prompt).catch((err) => {
-          this._dispatch({ type: 'agent.error', error: err.message })
-        })
-        return { sessionKey }
-      }
-
-      // New session
-      this._runAgent(prompt, agentId, sessionKey, options)
-    }
-
-    return { sessionKey }
-  }
-
-  /**
-   * Start an agent run. Fetches auth + system prompt directly (no worker).
-   */
-  private async _runAgent(
-    prompt: string,
-    agentId: string,
-    sessionKey: string,
-    options?: { model?: string; provider?: string },
-  ): Promise<void> {
-    if (!this._agentRunner) return
-    const provider = options?.provider || 'anthropic'
-
-    try {
-      const [authResult, systemPrompt] = await Promise.all([getAuthToken(provider, agentId), loadSystemPrompt()])
-
-      if (!authResult.apiKey) {
-        this._dispatch({
-          type: 'agent.error',
-          error: `No API key configured for provider "${provider}". Go to Settings to add one.`,
-        })
-        return
-      }
-
-      await this._agentRunner.run({
-        prompt,
-        agentId,
-        sessionKey,
-        model: options?.model,
-        provider,
-        apiKey: authResult.apiKey,
-        systemPrompt,
-        extraTools: this._extraAgentTools,
-      })
-    } catch (err: any) {
-      this._dispatch({ type: 'agent.error', error: err.message || 'Agent failed' })
-    }
-  }
-
-  /**
-   * Update the extra agent tools (e.g. after account tools change).
-   * Takes effect on the next agent turn — existing in-flight turns keep their tools.
-   */
-  updateExtraTools(tools: MobileClawInitOptions['tools']): void {
-    this._extraAgentTools = this._buildExtraAgentTools(tools)
-  }
-
-  private _buildExtraAgentTools(tools: MobileClawInitOptions['tools'] = []): AgentTool[] {
-    return (tools || []).map((tool) => ({
-      name: tool.name,
-      label: tool.name,
-      description: tool.description,
-      parameters: tool.inputSchema as any,
-      execute: async (_toolCallId: string, args: Record<string, unknown>) => {
-        try {
-          const result = await tool.execute(args)
-          // If the tool already returns AgentToolResult-shaped content blocks
-          // (e.g. image content blocks from analyze_file), pass them through
-          // instead of JSON-stringifying into a text block.
-          if (
-            result?.content &&
-            Array.isArray(result.content) &&
-            result.content.length > 0 &&
-            result.content[0]?.type
-          ) {
-            return { content: result.content, details: result }
-          }
-          const text = typeof result === 'string' ? result : JSON.stringify(result)
-          return {
-            content: [{ type: 'text' as const, text }],
-            details: result,
-          }
-        } catch (err: any) {
-          const message = err?.message || `Error executing ${tool.name}`
-          return {
-            content: [{ type: 'text' as const, text: `Error executing ${tool.name}: ${message}` }],
-            details: { error: message },
-          }
-        }
-      },
-    }))
-  }
-
-  private async _installWebViewFetchProxy(): Promise<void> {
-    if (this._webViewFetchProxyInstalled || typeof window === 'undefined') {
-      return
-    }
-
-    if (!Capacitor.isNativePlatform()) {
-      return
-    }
-
-    const { createProxiedFetch } = await import('./agent/fetch-proxy')
-    window.fetch = createProxiedFetch()
-    ;(window as any).__fetchProxied = true
-    this._webViewFetchProxyInstalled = true
-  }
-
-  /**
-   * Pre-execute hook: fires the event directly to UI listeners,
-   * then waits for the consumer to respond via respondToPreExecute().
-   */
-  private _handlePreExecute(
-    toolCallId: string,
-    toolName: string,
-    args: Record<string, unknown>,
-    signal?: AbortSignal,
-  ): Promise<PreExecuteResult> {
-    return new Promise((resolve) => {
-      const PRE_EXECUTE_TTL_MS = 120_000
-
-      const timer = setTimeout(() => {
-        this._preExecuteResolvers.delete(toolCallId)
-        this._dispatch({ type: 'tool.pre_execute.expired', toolCallId, toolName })
-        resolve({ deny: true, denyReason: 'pre_execute_timeout', args })
-      }, PRE_EXECUTE_TTL_MS)
-
-      this._preExecuteResolvers.set(toolCallId, (result) => {
-        clearTimeout(timer)
-        resolve(result)
-      })
-
-      if (signal) {
-        signal.addEventListener(
-          'abort',
-          () => {
-            clearTimeout(timer)
-            this._preExecuteResolvers.delete(toolCallId)
-            resolve({ deny: true, denyReason: 'aborted', args })
-          },
-          { once: true },
-        )
-      }
-
-      // Fire pre-execute event directly to UI listeners
-      this._dispatch({ type: 'tool.pre_execute', toolCallId, toolName, args })
-    })
-  }
-
-  async getModels(
-    provider = 'anthropic',
-  ): Promise<Array<{ id: string; name: string; description: string; default?: boolean }>> {
-    return getModelsNative(provider)
-  }
-
-  async stopTurn(): Promise<void> {
-    if (this._agentRunner) {
-      this._agentRunner.abort()
-    }
-  }
-
-  /**
-   * Respond to a pre-execution hook event.
-   * The consumer calls this to allow, deny, or transform tool arguments.
-   */
-  async respondToPreExecute(
-    toolCallId: string,
-    args: Record<string, unknown>,
-    deny?: boolean,
-    denyReason?: string,
-  ): Promise<void> {
-    const resolver = this._preExecuteResolvers.get(toolCallId)
-    if (resolver) {
-      this._preExecuteResolvers.delete(toolCallId)
-      resolver({ deny: deny ?? false, denyReason, args })
-    }
-  }
-
-  async steerAgent(text: string): Promise<void> {
-    if (this._agentRunner) {
-      this._agentRunner.steer(text)
-    }
   }
 
   // ── Configuration ──────────────────────────────────────────────────────
@@ -1019,27 +411,24 @@ export class MobileClawEngine {
     const action = typeof config.action === 'string' ? config.action : ''
     const provider =
       typeof config.provider === 'string' && config.provider.trim() ? config.provider.trim() : 'anthropic'
+    const plugin = getNativeAgent()
 
     if (action === 'setApiKey') {
       const apiKey = typeof config.apiKey === 'string' ? config.apiKey.trim() : ''
-      if (!apiKey) {
-        throw new Error('Missing apiKey for setApiKey')
-      }
-      await setAuthKeyNative(apiKey, provider, 'main', 'api_key')
+      if (!apiKey) throw new Error('Missing apiKey for setApiKey')
+      await plugin.setAuthKey({ key: apiKey, provider, authType: 'api_key' })
       return
     }
 
     if (action === 'setOAuth') {
       const accessToken = typeof config.accessToken === 'string' ? config.accessToken.trim() : ''
-      if (!accessToken) {
-        throw new Error('Missing accessToken for setOAuth')
-      }
-      await setAuthKeyNative(accessToken, provider, 'main', 'oauth')
+      if (!accessToken) throw new Error('Missing accessToken for setOAuth')
+      await plugin.setAuthKey({ key: accessToken, provider, authType: 'oauth' })
       return
     }
 
     if (action === 'deleteAuth' || action === 'clearAuth') {
-      await deleteAuthNative(provider, 'main')
+      await plugin.deleteAuth({ provider })
       return
     }
   }
@@ -1063,29 +452,34 @@ export class MobileClawEngine {
   }
 
   async getAuthStatus(provider = 'anthropic'): Promise<AuthStatus> {
-    return getAuthStatusNative(provider)
+    const result = await getNativeAgent().getAuthStatus({ provider })
+    return { hasKey: result.hasKey, masked: result.masked }
   }
 
   async setAuthKey(key: string, provider = 'anthropic', type: 'api_key' | 'oauth' = 'api_key'): Promise<void> {
-    await setAuthKeyNative(key, provider, 'main', type)
+    await getNativeAgent().setAuthKey({ key, provider, authType: type })
+  }
+
+  async getModels(
+    provider = 'anthropic',
+  ): Promise<Array<{ id: string; name: string; description: string; default?: boolean }>> {
+    const result = await getNativeAgent().getModels({ provider })
+    return JSON.parse(result.modelsJson)
   }
 
   // ── Scheduler / heartbeat / cron ─────────────────────────────────────
 
   async setSchedulerConfig(config: Partial<SchedulerConfig>): Promise<void> {
-    if (!this._cronDb) return
-    await this._cronDb.setSchedulerConfig(config as Record<string, unknown>)
+    const plugin = getNativeAgent()
+    await plugin.setSchedulerConfig({ configJson: JSON.stringify(config) })
 
-    // Register/unregister MobileCron sentinel job when toggling enabled
+    // Register/unregister MobileCron sentinel job
     if (this._mobileCron && 'enabled' in config) {
       if (config.enabled) {
         const full = await this.getSchedulerConfig()
         await this._mobileCron.register({
           name: 'sentinel-heartbeat',
-          schedule: {
-            kind: 'every',
-            everyMs: full.heartbeat.everyMs || 1_800_000,
-          },
+          schedule: { kind: 'every', everyMs: full.heartbeat.everyMs || 1_800_000 },
           activeHours: full.heartbeat.activeHours,
           priority: 'normal',
           requiresNetwork: true,
@@ -1104,142 +498,122 @@ export class MobileClawEngine {
   }
 
   async getSchedulerConfig(): Promise<{ scheduler: SchedulerConfig; heartbeat: HeartbeatConfig }> {
-    if (this._cronDb) {
-      const scheduler = await this._cronDb.getSchedulerConfig()
-      const heartbeat = await this._cronDb.getHeartbeatConfig()
-      return { scheduler, heartbeat }
-    }
-    return {
-      scheduler: { enabled: true, schedulingMode: 'balanced' } as SchedulerConfig,
-      heartbeat: { everyMs: 1_800_000 } as HeartbeatConfig,
-    }
+    const plugin = getNativeAgent()
+    const schedulerResult = await plugin.getSchedulerConfig()
+    const scheduler = JSON.parse(schedulerResult.schedulerJson)
+    const heartbeat = JSON.parse(schedulerResult.heartbeatJson)
+    return { scheduler, heartbeat }
   }
 
   async setHeartbeat(config: Partial<HeartbeatConfig>): Promise<void> {
-    if (this._cronDb) {
-      await this._cronDb.setHeartbeatConfig(config as Record<string, unknown>)
-    }
+    await getNativeAgent().setHeartbeatConfig({ configJson: JSON.stringify(config) })
   }
 
   async triggerHeartbeatWake(source = 'manual'): Promise<void> {
-    if (this._heartbeatManager) {
-      await this._heartbeatManager.handleWake(source, { force: source === 'manual' })
-    }
+    await getNativeAgent().handleWake({ source })
   }
 
   async addCronJob(job: CronJobInput): Promise<CronJobRecord> {
-    if (!this._cronDb) throw new Error('CronDb not initialized')
-    return this._cronDb.addCronJob(job) as Promise<CronJobRecord>
+    const result = await getNativeAgent().addCronJob({ inputJson: JSON.stringify(job) })
+    return JSON.parse(result.recordJson)
   }
 
   async updateCronJob(id: string, patch: Partial<CronJobInput>): Promise<void> {
-    if (!this._cronDb) throw new Error('Cron not initialized')
-    await this._cronDb.updateCronJob(id, patch as Record<string, unknown>)
+    await getNativeAgent().updateCronJob({ id, patchJson: JSON.stringify(patch) })
   }
 
   async removeCronJob(id: string): Promise<void> {
-    if (!this._cronDb) throw new Error('CronDb not initialized')
-    await this._cronDb.removeCronJob(id)
+    await getNativeAgent().removeCronJob({ id })
   }
 
   async listCronJobs(): Promise<CronJobRecord[]> {
-    if (!this._cronDb) return []
-    return this._cronDb.listCronJobs()
+    const result = await getNativeAgent().listCronJobs()
+    return JSON.parse(result.jobsJson)
   }
 
   async runCronJob(id: string): Promise<void> {
-    if (this._heartbeatManager) {
-      await this._heartbeatManager.handleWake('manual', { force: true, forceJobId: id })
-    }
+    await getNativeAgent().runCronJob({ jobId: id })
   }
 
-  async getCronRunHistory(_jobId?: string, _limit = 50): Promise<CronRunRecord[]> {
-    // TODO: CronDbAccess doesn't have listRuns yet — add when needed
-    return []
+  async listCronRuns(opts?: { jobId?: string; limit?: number }): Promise<CronRunRecord[]> {
+    const result = await getNativeAgent().listCronRuns({ jobId: opts?.jobId, limit: opts?.limit || 100 })
+    return JSON.parse(result.runsJson)
+  }
+
+  async getCronRunHistory(jobId?: string, limit = 50): Promise<CronRunRecord[]> {
+    return this.listCronRuns({ jobId, limit })
   }
 
   async addSkill(skill: CronSkillInput): Promise<CronSkillRecord> {
-    if (!this._cronDb) throw new Error('CronDb not initialized')
-    return this._cronDb.addCronSkill(skill)
+    const result = await getNativeAgent().addSkill({ inputJson: JSON.stringify(skill) })
+    return JSON.parse(result.recordJson)
   }
 
   async updateSkill(id: string, patch: Partial<CronSkillInput>): Promise<void> {
-    if (!this._cronDb) throw new Error('CronDb not initialized')
-    await this._cronDb.updateCronSkill(id, patch as Record<string, unknown>)
+    await getNativeAgent().updateSkill({ id, patchJson: JSON.stringify(patch) })
   }
 
   async removeSkill(id: string): Promise<void> {
-    if (!this._cronDb) throw new Error('CronDb not initialized')
-    await this._cronDb.removeCronSkill(id)
+    await getNativeAgent().removeSkill({ id })
   }
 
   async listSkills(): Promise<CronSkillRecord[]> {
-    if (!this._cronDb) return []
-    return this._cronDb.listCronSkills()
+    const result = await getNativeAgent().listSkills()
+    return JSON.parse(result.skillsJson)
   }
 
-  // ── File operations ────────────────────────────────────────────────────
+  // ── File operations (delegates to native tools) ────────────────────────
 
   async readFile(path: string): Promise<FileReadResult> {
-    const result = await readFileNative({ path })
-    const details = result.details as any
+    const result = await getNativeAgent().invokeTool({
+      toolName: 'read_file',
+      argsJson: JSON.stringify({ path }),
+    })
+    const details = JSON.parse(result.resultJson)
     return { path, content: details?.content || '', error: details?.error }
   }
 
   async writeFile(path: string, content: string): Promise<void> {
-    await writeFileNative({ path, content })
+    await getNativeAgent().invokeTool({
+      toolName: 'write_file',
+      argsJson: JSON.stringify({ path, content }),
+    })
   }
 
   // ── Session management ─────────────────────────────────────────────────
 
   async listSessions(agentId = 'main'): Promise<SessionListResult> {
-    if (!this._sessionStore) return { agentId, sessions: [] }
-    const sessions = await this._sessionStore.listSessions(agentId)
+    const result = await getNativeAgent().listSessions({ agentId })
+    const sessions: SessionInfo[] = JSON.parse(result.sessionsJson)
     return { agentId, sessions }
   }
 
   async getLatestSession(agentId = 'main'): Promise<SessionInfo | null> {
-    if (!this._sessionStore) return null
-    return this._sessionStore.getLatestSession(agentId)
+    const { sessions } = await this.listSessions(agentId)
+    return sessions[0] || null
   }
 
   async loadSessionHistory(sessionKey: string, _agentId = 'main'): Promise<SessionHistoryResult> {
-    if (!this._sessionStore) return { sessionKey, messages: [] }
-    const messages = await this._sessionStore.loadMessages(sessionKey)
+    const result = await getNativeAgent().loadSession({ sessionKey, agentId: _agentId })
+    const messages = JSON.parse(result.messagesJson)
     return { sessionKey, messages }
   }
 
   async resumeSession(
     sessionKey: string,
     agentId = 'main',
-    options?: { messages?: import('@mariozechner/pi-agent-core').AgentMessage[]; provider?: string; model?: string },
+    options?: { messages?: any[]; provider?: string; model?: string },
   ): Promise<{ success: boolean; error?: string; sessionKey?: string; messageCount?: number }> {
     this._currentSessionKey = sessionKey
-
-    if (!this._agentRunner) {
-      return { success: false, error: 'Agent runner not initialized' }
-    }
-
     try {
-      const provider = options?.provider || 'anthropic'
-      const [authResult, systemPrompt] = await Promise.all([getAuthToken(provider, agentId), loadSystemPrompt()])
-
-      if (!authResult.apiKey) {
-        return { success: false, error: `No API key configured for provider "${provider}"` }
-      }
-
-      const messages = options?.messages ?? []
-      await this._agentRunner.resume({
+      await getNativeAgent().resumeSession({
         sessionKey,
-        messages,
+        agentId,
+        messagesJson: options?.messages ? JSON.stringify(options.messages) : undefined,
+        provider: options?.provider,
         model: options?.model,
-        systemPrompt,
-        apiKey: authResult.apiKey,
-        provider,
-        extraTools: this._extraAgentTools,
       })
-
-      return { success: true, sessionKey, messageCount: messages.length }
+      return { success: true, sessionKey, messageCount: options?.messages?.length || 0 }
     } catch (err: any) {
       return { success: false, error: err?.message || 'Failed to resume session' }
     }
@@ -1247,9 +621,9 @@ export class MobileClawEngine {
 
   async clearConversation(): Promise<{ success: boolean }> {
     this._currentSessionKey = null
-    if (this._agentRunner) {
-      this._agentRunner.clear()
-    }
+    await getNativeAgent()
+      .clearSession()
+      .catch(() => {})
     return { success: true }
   }
 
@@ -1261,20 +635,24 @@ export class MobileClawEngine {
     return { sessionKey: this._currentSessionKey }
   }
 
-  // ── Tool invocation ────────────────────────────────────────────────────
+  // ── Tool invocation (direct, without agent) ────────────────────────────
 
   async invokeTool(toolName: string, args: Record<string, unknown> = {}): Promise<ToolInvokeResult> {
-    if (!this._toolProxy) {
-      return { toolName, error: 'Tool proxy not initialized' } as ToolInvokeResult
+    try {
+      const result = await getNativeAgent().invokeTool({
+        toolName,
+        argsJson: JSON.stringify(args),
+      })
+      return { toolName, result: JSON.parse(result.resultJson) }
+    } catch (err: any) {
+      return { toolName, error: err?.message || `Unknown tool: ${toolName}` }
     }
-    const tools = this._toolProxy.buildTools()
-    const tool = tools.find((t) => t.name === toolName)
-    if (!tool) {
-      return { toolName, error: `Unknown tool: ${toolName}` } as ToolInvokeResult
-    }
-    const toolCallId = `invoke-${Date.now()}`
-    const result = await tool.execute(toolCallId, args)
-    return { toolName, result } as ToolInvokeResult
+  }
+
+  // ── Extra tools update (for account tools loaded from WebView) ────────
+
+  updateExtraTools(_tools: MobileClawInitOptions['tools']): void {
+    // TODO: pass extra tool definitions to native agent via startMcp/restartMcp
   }
 
   // ── Events (Capacitor plugin pattern) ──────────────────────────────────
@@ -1310,15 +688,11 @@ export class MobileClawEngine {
   removeAllListeners(eventName?: MobileClawEventName): void {
     if (eventName) {
       const bridgeType = MobileClawEngine.EVENT_MAP[eventName]
-      if (bridgeType) {
-        this.listeners.delete(bridgeType)
-      }
+      if (bridgeType) this.listeners.delete(bridgeType)
     } else {
       this.listeners.clear()
     }
   }
-
-  // ── Low-level message listener (for advanced use / framework wrappers) ─
 
   onMessage(type: string, handler: MessageHandler, opts?: { once?: boolean }): () => void {
     return this._onMessage(type, handler, opts)
@@ -1326,5 +700,62 @@ export class MobileClawEngine {
 
   dispatchEvent(message: Record<string, unknown>): void {
     this._dispatch(message)
+  }
+
+  // ── Internal messaging ────────────────────────────────────────────────
+
+  private _onMessage(type: string, handler: MessageHandler, opts: { once?: boolean } = {}): () => void {
+    if (!this.listeners.has(type)) {
+      this.listeners.set(type, new Set())
+    }
+    const wrapped = opts.once
+      ? (msg: any) => {
+          this.listeners.get(type)?.delete(wrapped)
+          handler(msg)
+        }
+      : handler
+    this.listeners.get(type)?.add(wrapped)
+    return () => this.listeners.get(type)?.delete(wrapped)
+  }
+
+  private _dispatch(msg: any): void {
+    // Tag agent events with active skill ID
+    if (this._activeSkillId && !msg.skill) {
+      const agentTypes = [
+        'agent.event',
+        'agent.completed',
+        'agent.error',
+        'agent.started',
+        'tool.pre_execute',
+        'tool.pre_execute.result',
+        'tool.pre_execute.expired',
+      ]
+      if (agentTypes.includes(msg.type)) {
+        msg.skill = this._activeSkillId
+      }
+    }
+
+    // Type-specific handlers
+    const handlers = this.listeners.get(msg.type)
+    if (handlers) {
+      for (const h of handlers) {
+        try {
+          h(msg)
+        } catch (e) {
+          console.error('[MobileClaw] handler error:', e)
+        }
+      }
+    }
+    // Wildcard handlers
+    const wildcards = this.listeners.get('*')
+    if (wildcards) {
+      for (const h of wildcards) {
+        try {
+          h(msg)
+        } catch (e) {
+          console.error('[MobileClaw] wildcard error:', e)
+        }
+      }
+    }
   }
 }

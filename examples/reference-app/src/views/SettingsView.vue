@@ -996,13 +996,16 @@ async function saveApiKeyFromDialog() {
 // ── Workspace Editor ─────────────────────────────────────────────────────────
 
 const files = [
+  { name: 'AGENTS.md', label: 'AGENTS.md' },
   { name: 'SOUL.md', label: 'SOUL.md' },
-  { name: 'MEMORY.md', label: 'MEMORY.md' },
   { name: 'IDENTITY.md', label: 'IDENTITY.md' },
+  { name: 'USER.md', label: 'USER.md' },
+  { name: 'TOOLS.md', label: 'TOOLS.md' },
   { name: 'HEARTBEAT.md', label: 'HEARTBEAT.md' },
+  { name: 'MEMORY.md', label: 'MEMORY.md' },
 ]
 
-const activeFile = ref('SOUL.md')
+const activeFile = ref('AGENTS.md')
 const content = ref('')
 const originalContent = ref('')
 const dirty = ref(false)

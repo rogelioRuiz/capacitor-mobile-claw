@@ -1,7 +1,7 @@
 {
   "name": "capacitor-mobile-claw",
-  "version": "1.9.7",
-  "description": "On-device AI agent engine for Capacitor apps — native WebView LLM agent with file tools, code execution, git, and extensible MCP server",
+  "version": "2.0.3",
+  "description": "On-device AI agent engine for Capacitor apps — thin WebView bridge to a native Rust agent with LLM, tool execution, cron, and MCP support",
   "main": "dist/esm/index.js",
   "types": "dist/esm/index.d.ts",
   "type": "module",
@@ -43,20 +43,14 @@
     "ios/Plugin/",
     "CapacitorMobileClaw.podspec"
   ],
-  "dependencies": {
-    "@mariozechner/pi-agent-core": "^0.55.1",
-    "@mariozechner/pi-ai": "^0.55.1",
-    "@sinclair/typebox": "^0.34.41",
-    "isomorphic-git": "^1.37.2"
-  },
+  "dependencies": {},
   "peerDependencies": {
-    "@capacitor-community/sqlite": ">=6.0.0",
     "@capacitor/core": "^8.0.0",
     "@capacitor/device": "^8.0.0",
     "@capacitor/filesystem": "^8.0.0",
     "@modelcontextprotocol/sdk": ">=1.0.0",
     "capacitor-mobilecron": ">=0.1.0",
-    "capacitor-wasm-agent-tools": ">=0.1.0"
+    "capacitor-native-agent": ">=0.1.0"
   },
   "peerDependenciesMeta": {
     "@modelcontextprotocol/sdk": {
@@ -65,13 +59,12 @@
     "capacitor-mobilecron": {
       "optional": true
     },
-    "capacitor-wasm-agent-tools": {
+    "capacitor-native-agent": {
       "optional": true
     }
   },
   "devDependencies": {
     "@biomejs/biome": "^2.0.0",
-    "@capacitor-community/sqlite": "^8.0.0",
     "@capacitor/core": "^8.1.0",
     "@capacitor/device": "^8.0.1",
     "@capacitor/filesystem": "^8.1.2",
@@ -79,8 +72,6 @@
     "@commitlint/config-conventional": "^19.0.0",
     "@modelcontextprotocol/sdk": "^1.26.0",
     "@stomp/stompjs": "^7.0.0",
-    "capacitor-wasm-agent-tools": "^0.1.0",
-    "isomorphic-git": "^1.37.2",
     "lefthook": "^1.6.0",
     "typescript": "^5.7.0",
     "vitest": "^2.1.0"
@@ -94,12 +85,13 @@
     "llm",
     "anthropic",
     "claude",
-    "file-tools",
     "mcp",
     "model-context-protocol",
     "mobile",
     "android",
-    "ios"
+    "ios",
+    "native",
+    "rust"
   ],
   "repository": {
     "type": "git",
