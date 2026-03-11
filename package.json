@@ -1,6 +1,6 @@
 {
   "name": "capacitor-mobile-claw",
-  "version": "1.9.4",
+  "version": "1.9.5",
   "description": "On-device AI agent engine for Capacitor apps — native WebView LLM agent with file tools, code execution, git, and extensible MCP server",
   "main": "dist/esm/index.js",
   "types": "dist/esm/index.d.ts",

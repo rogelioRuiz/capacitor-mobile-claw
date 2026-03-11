@@ -702,6 +702,9 @@ export class MobileClawEngine {
     this._skillAgent = null
     this._skillSessionKey = null
     this._skillEndRequested = false
+    // Reset session key so the next sendMessage creates a fresh main session
+    // instead of reusing the skill's session key.
+    this._currentSessionKey = null
     this._dispatch({ type: 'skill.ended', skillId, sessionKey })
   }
 
