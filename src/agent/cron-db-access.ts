@@ -43,6 +43,21 @@ export interface CronRunInsert {
   wakeSource?: string | null
 }
 
+export interface CronRunRecord {
+  id: number
+  jobId: string
+  startedAt: number
+  endedAt?: number | null
+  status?: string | null
+  durationMs?: number | null
+  error?: string | null
+  responseText?: string | null
+  wasHeartbeatOk: boolean
+  wasDeduped: boolean
+  delivered: boolean
+  wakeSource?: string | null
+}
+
 export class CronDbAccess {
   private sqlite: SQLiteConnection | null = null
   private db: any = null
@@ -578,6 +593,20 @@ export class CronDbAccess {
     return row?.id ?? null
   }
 
+  async listCronRuns(opts: { jobId?: string; limit?: number } = {}): Promise<CronRunRecord[]> {
+    await this.ensureReady()
+    const limit = opts.limit || 100
+    if (opts.jobId) {
+      const result = await this.db.query('SELECT * FROM cron_runs WHERE job_id = ? ORDER BY started_at DESC LIMIT ?', [
+        opts.jobId,
+        limit,
+      ])
+      return (result.values || []).map(_toCronRunRecord)
+    }
+    const result = await this.db.query('SELECT * FROM cron_runs ORDER BY started_at DESC LIMIT ?', [limit])
+    return (result.values || []).map(_toCronRunRecord)
+  }
+
   async peekPendingEvents(sessionKey: string): Promise<PendingSystemEvent[]> {
     await this.ensureReady()
     const result = await this.db.query(
@@ -819,5 +848,22 @@ function _toCronJobRecord(row: any): CronJobStoreRecord {
     consecutiveErrors: row.consecutive_errors ?? 0,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  }
+}
+
+function _toCronRunRecord(row: any): CronRunRecord {
+  return {
+    id: row.id,
+    jobId: row.job_id,
+    startedAt: row.started_at,
+    endedAt: row.ended_at ?? null,
+    status: row.status ?? null,
+    durationMs: row.duration_ms ?? null,
+    error: row.error ?? null,
+    responseText: row.response_text ?? null,
+    wasHeartbeatOk: _toBool(row.was_heartbeat_ok),
+    wasDeduped: _toBool(row.was_deduped),
+    delivered: _toBool(row.delivered),
+    wakeSource: row.wake_source ?? null,
   }
 }

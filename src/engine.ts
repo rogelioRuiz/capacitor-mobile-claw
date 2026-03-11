@@ -131,6 +131,11 @@ export class MobileClawEngine {
     return this._agentRunner
   }
 
+  /** Query cron run history from SQLite. */
+  async listCronRuns(opts?: { jobId?: string; limit?: number }) {
+    return this._cronDb?.listCronRuns(opts) ?? []
+  }
+
   // ── Lifecycle ──────────────────────────────────────────────────────────
 
   async init(options: MobileClawInitOptions = {}): Promise<MobileClawReadyInfo> {
