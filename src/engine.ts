@@ -1107,7 +1107,7 @@ export class MobileClawEngine {
       return { scheduler, heartbeat }
     }
     return {
-      scheduler: { enabled: false, schedulingMode: 'balanced' } as SchedulerConfig,
+      scheduler: { enabled: true, schedulingMode: 'balanced' } as SchedulerConfig,
       heartbeat: { everyMs: 1_800_000 } as HeartbeatConfig,
     }
   }
