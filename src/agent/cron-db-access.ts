@@ -140,7 +140,7 @@ export class CronDbAccess {
     await this._run(
       `INSERT OR IGNORE INTO heartbeat_config
        (id, enabled, every_ms, updated_at)
-       VALUES (1, 0, 1800000, ?)`,
+       VALUES (1, 1, 1800000, ?)`,
       [Date.now()],
     )
     const row = await this._queryOne('SELECT * FROM heartbeat_config WHERE id = 1')
