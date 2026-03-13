@@ -53,6 +53,8 @@ function getNativeAgent(): any {
   return g.__nativeAgentPlugin
 }
 
+const OPENCLAW_ROOT = 'nodejs/data'
+
 export class MobileClawEngine {
   // ── State ──────────────────────────────────────────────────────────────
 
@@ -136,10 +138,14 @@ export class MobileClawEngine {
     try {
       this._available = true
       const plugin = getNativeAgent()
+      const openclawRoot = OPENCLAW_ROOT
 
       // ── Initialize workspace (creates dirs + default files) ──────────
-      const { initWorkspace } = await import('./agent/workspace-init')
-      const { openclawRoot } = await initWorkspace()
+      await plugin.initWorkspace({
+        dbPath: `files://${openclawRoot}/mobile-claw.db`,
+        workspacePath: `files://${openclawRoot}/workspace`,
+        authProfilesPath: `files://${openclawRoot}/agents/main/agent/auth-profiles.json`,
+      })
       this._openclawRoot = openclawRoot
 
       this._loadingPhase = 'initializing native agent'
@@ -177,7 +183,9 @@ export class MobileClawEngine {
 
         // Register MCP tools with native agent so Rust knows about them
         if (this._mcpToolCount > 0) {
-          const toolsJson = JSON.stringify((this._mcpManager as any).getToolSchemas?.() ?? [])
+          const toolsJson = JSON.stringify(
+            this._mcpManager.getToolSchemas().map((tool) => ({ ...tool, webviewOnly: true })),
+          )
           await plugin.startMcp({ toolsJson }).catch(() => {})
         }
       } catch (mcpErr) {
@@ -227,6 +235,9 @@ export class MobileClawEngine {
       case 'tool_result':
         this._dispatch({ type: 'agent.event', eventType: 'tool_result', data: payload })
         break
+      case 'mcp_tool_call':
+        void this._handleMcpToolCall(payload)
+        break
       case 'user_message':
         this._dispatch({ type: 'agent.event', eventType: 'user_message', data: payload })
         break
@@ -269,6 +280,35 @@ export class MobileClawEngine {
       default:
         this._dispatch({ type: eventType, ...payload })
         break
+    }
+  }
+
+  private async _handleMcpToolCall(payload: any): Promise<void> {
+    const plugin = getNativeAgent()
+    const toolCallId = typeof payload?.toolCallId === 'string' ? payload.toolCallId : ''
+    const toolName = typeof payload?.toolName === 'string' ? payload.toolName : ''
+    const args = payload?.args && typeof payload.args === 'object' ? payload.args : {}
+
+    if (!toolCallId || !toolName) return
+
+    try {
+      if (!this._mcpManager) {
+        throw new Error('MCP manager is not initialized')
+      }
+      const result = await this._mcpManager.executeTool(toolName, args)
+      await plugin.respondToMcpTool({
+        toolCallId,
+        resultJson: JSON.stringify(result ?? null),
+        isError: false,
+      })
+    } catch (error: any) {
+      await plugin
+        .respondToMcpTool({
+          toolCallId,
+          resultJson: JSON.stringify({ error: error?.message || String(error) }),
+          isError: true,
+        })
+        .catch(() => {})
     }
   }
 
@@ -342,15 +382,12 @@ export class MobileClawEngine {
     }
     const sessionKey = this._currentSessionKey
 
-    const { loadSystemPrompt } = await import('./agent/workspace-init')
-    const systemPrompt = await loadSystemPrompt()
-
     await plugin.sendMessage({
       prompt,
       sessionKey,
       model: options?.model,
       provider: options?.provider || 'anthropic',
-      systemPrompt,
+      systemPrompt: '',
       maxTurns: 25,
     })
 
@@ -434,21 +471,11 @@ export class MobileClawEngine {
   }
 
   async exchangeOAuthCode(tokenUrl: string, body: Record<string, string>, contentType?: string): Promise<any> {
-    const { CapacitorHttp } = await import('@capacitor/core')
-    const ct = contentType || 'application/json'
-    try {
-      const resp = await CapacitorHttp.request({
-        method: 'POST',
-        url: tokenUrl,
-        headers: { 'Content-Type': ct },
-        data: body,
-        responseType: 'json',
-      })
-      const ok = resp.status >= 200 && resp.status < 300
-      return { success: ok, status: resp.status, data: resp.data, text: ok ? undefined : JSON.stringify(resp.data) }
-    } catch (err: any) {
-      return { success: false, error: err.message }
-    }
+    return getNativeAgent().exchangeOAuthCode({
+      tokenUrl,
+      bodyJson: JSON.stringify(body),
+      contentType,
+    })
   }
 
   async getAuthStatus(provider = 'anthropic'): Promise<AuthStatus> {
@@ -621,6 +648,9 @@ export class MobileClawEngine {
 
   async clearConversation(): Promise<{ success: boolean }> {
     this._currentSessionKey = null
+    // Only clear in-memory session state on the native side.
+    // Don't delete the session from the DB — it should remain in the
+    // session index so the user can switch back to it later.
     await getNativeAgent()
       .clearSession()
       .catch(() => {})

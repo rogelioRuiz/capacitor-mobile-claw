@@ -20,6 +20,7 @@ export interface McpServerOptions {
 
 export class McpServerManager {
   private manager: TransportManager | null = null
+  private tools: DeviceTool[] = []
   private _status: McpStatus = 'disconnected'
   private _error: string | null = null
   private _deviceId: string | null = null
@@ -65,6 +66,7 @@ export class McpServerManager {
 
       // Use tools provided by the caller (from an external tools package)
       const tools = options.tools ?? []
+      this.tools = tools
       if (tools.length === 0) {
         console.warn('[MCP] No tools provided — MCP server will have zero device tools')
       }
@@ -110,5 +112,21 @@ export class McpServerManager {
   async restart(options?: McpServerOptions): Promise<void> {
     await this.stop()
     await this.start(options)
+  }
+
+  getToolSchemas(): Array<{ name: string; description: string; inputSchema: Record<string, any> }> {
+    return this.tools.map((tool) => ({
+      name: tool.name,
+      description: tool.description,
+      inputSchema: tool.inputSchema,
+    }))
+  }
+
+  async executeTool(name: string, args: Record<string, any>): Promise<any> {
+    const tool = this.tools.find((candidate) => candidate.name === name)
+    if (!tool) {
+      throw new Error(`MCP tool not found: ${name}`)
+    }
+    return tool.execute(args)
   }
 }
