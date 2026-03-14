@@ -251,6 +251,13 @@ export class MobileClawEngine {
         this._dispatch({ type: 'agent.error', ...payload })
         break
       case 'approval_request':
+        // Auto-approve skill tools — they run in the WebView, no user confirmation needed
+        if (this._activeSkillId && this._skillToolNames.includes(payload.toolName)) {
+          getNativeAgent()
+            .respondToApproval({ toolCallId: payload.toolCallId, approved: true })
+            .catch(() => {})
+          return
+        }
         this._dispatch({ type: 'tool.pre_execute', ...payload })
         break
       case 'retry':
@@ -488,7 +495,7 @@ export class MobileClawEngine {
 
     // Build launch config for native startSkill
     const launch = {
-      prompt: (config.kickoff as string) || `Run skill ${skillId}`,
+      prompt: `[hidden] ${(config.kickoff as string) || `Run skill ${skillId}`}`,
       systemPrompt: (config.systemPrompt as string) || '',
       model: config.model,
       maxTurns: (config.maxTurns as number) || 25,

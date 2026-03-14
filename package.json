@@ -1,6 +1,6 @@
 {
   "name": "capacitor-mobile-claw",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "description": "On-device AI agent engine for Capacitor apps — thin WebView bridge to a native Rust agent with LLM, tool execution, cron, and MCP support",
   "main": "dist/esm/index.js",
   "types": "dist/esm/index.d.ts",
