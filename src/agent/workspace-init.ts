@@ -382,9 +382,11 @@ export async function loadSystemPrompt(): Promise<string> {
  */
 const CURATED_MODELS: Record<string, Array<{ id: string; name: string; description: string; default?: boolean }>> = {
   anthropic: [
-    { id: 'claude-sonnet-4-5', name: 'Claude Sonnet 4.5', description: 'Fast and capable', default: true },
-    { id: 'claude-haiku-4-5', name: 'Claude Haiku 4.5', description: 'Quick and lightweight' },
+    { id: 'claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5', description: 'Quick and lightweight', default: true },
+    { id: 'claude-sonnet-4-5', name: 'Claude Sonnet 4.5', description: 'Fast and capable' },
+    { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6', description: 'Fast and capable (latest)' },
     { id: 'claude-opus-4', name: 'Claude Opus 4', description: 'Most capable' },
+    { id: 'claude-opus-4-6', name: 'Claude Opus 4.6', description: 'Most capable (latest)' },
   ],
   openrouter: [
     { id: 'anthropic/claude-sonnet-4.5', name: 'Claude Sonnet 4.5', description: 'Fast and capable', default: true },
