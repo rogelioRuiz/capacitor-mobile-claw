@@ -114,6 +114,31 @@ export class McpServerManager {
     await this.start(options)
   }
 
+  /**
+   * Dynamically add tools (e.g. skill tools) without restarting transports.
+   * Re-registers with native agent if tools changed.
+   */
+  addTools(newTools: DeviceTool[]): void {
+    for (const tool of newTools) {
+      // Replace existing tool with same name, or append
+      const idx = this.tools.findIndex((t) => t.name === tool.name)
+      if (idx >= 0) {
+        this.tools[idx] = tool
+      } else {
+        this.tools.push(tool)
+      }
+    }
+    this._toolCount = this.tools.length
+  }
+
+  /**
+   * Remove tools by name (e.g. when a skill ends).
+   */
+  removeTools(names: string[]): void {
+    this.tools = this.tools.filter((t) => !names.includes(t.name))
+    this._toolCount = this.tools.length
+  }
+
   getToolSchemas(): Array<{ name: string; description: string; inputSchema: Record<string, any> }> {
     return this.tools.map((tool) => ({
       name: tool.name,

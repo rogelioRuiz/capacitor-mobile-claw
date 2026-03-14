@@ -73,6 +73,9 @@ export class MobileClawEngine {
   private _mobileCron: any = null
   // ── Skill state (UI bridge only — agent loop is in Rust) ────────────
   private _activeSkillId: string | null = null
+  private _skillEndRequested = false
+  private _skillToolNames: string[] = []
+  private _pendingSkillResults = new Map<string, (result: any) => void>()
 
   // ── Public getters ─────────────────────────────────────────────────────
 
@@ -425,6 +428,227 @@ export class MobileClawEngine {
       .catch(() => {})
   }
 
+  // ── Skill lifecycle ──────────────────────────────────────────────────
+
+  /**
+   * Start a skill session. Converts skill tool definitions into MCP tools,
+   * registers them with native agent, ensures skill exists in DB, then
+   * launches via native startSkill.
+   */
+  async startSkill(
+    skillId: string,
+    config: Record<string, unknown>,
+    provider?: string,
+  ): Promise<{ sessionKey: string }> {
+    const plugin = getNativeAgent()
+
+    // Build MCP tools from skill tool definitions and register them
+    const skillTools = config.tools as any[] | undefined
+    if (Array.isArray(skillTools) && skillTools.length > 0 && this._mcpManager) {
+      const mcpTools = this._buildSkillMcpTools(skillId, skillTools, config)
+      this._skillToolNames = mcpTools.map((t) => t.name)
+      this._mcpManager.addTools(mcpTools)
+
+      // Re-register all MCP tools with native agent
+      const toolsJson = JSON.stringify(
+        this._mcpManager.getToolSchemas().map((tool) => ({ ...tool, webviewOnly: true })),
+      )
+      await plugin.startMcp({ toolsJson }).catch(() => {})
+      this._mcpToolCount = this._mcpManager.toolCount
+    }
+
+    // Ensure skill exists in native DB (Rust start_skill does db::load_skill)
+    const skillInput = {
+      name: skillId,
+      systemPrompt: (config.systemPrompt as string) || '',
+      model: (config.model as string) || undefined,
+      maxTurns: (config.maxTurns as number) || 25,
+    }
+    try {
+      await plugin.addSkill({ inputJson: JSON.stringify(skillInput) })
+    } catch {
+      // Skill may already exist — try to update it
+      try {
+        const existing = JSON.parse((await plugin.listSkills()).skillsJson)
+        const found = existing.find((s: any) => s.name === skillId)
+        if (found) {
+          await plugin.updateSkill({
+            id: found.id,
+            patchJson: JSON.stringify({
+              systemPrompt: skillInput.systemPrompt,
+              model: skillInput.model,
+              maxTurns: skillInput.maxTurns,
+            }),
+          })
+        }
+      } catch {
+        /* non-fatal */
+      }
+    }
+
+    // Build launch config for native startSkill
+    const launch = {
+      prompt: (config.kickoff as string) || `Run skill ${skillId}`,
+      systemPrompt: (config.systemPrompt as string) || '',
+      model: config.model,
+      maxTurns: (config.maxTurns as number) || 25,
+    }
+
+    // Find the skill ID in DB (native needs the DB ID, not our name)
+    let dbSkillId = skillId
+    try {
+      const existing = JSON.parse((await plugin.listSkills()).skillsJson)
+      const found = existing.find((s: any) => s.name === skillId)
+      if (found) dbSkillId = found.id
+    } catch {
+      /* use name as fallback */
+    }
+
+    const result = await plugin.startSkill({
+      skillId: dbSkillId,
+      configJson: JSON.stringify(launch),
+      provider: provider || 'anthropic',
+    })
+
+    const sessionKey = result.sessionKey || `skill-${skillId}-${Date.now()}`
+    this._activeSkillId = skillId
+    this._skillEndRequested = false
+    this._currentSessionKey = sessionKey
+
+    // Dispatch session_started so consumer listeners pick it up
+    this._dispatch({
+      type: 'skill.session_started',
+      skillId,
+      sessionKey,
+    })
+
+    return { sessionKey }
+  }
+
+  /**
+   * End a skill session. Cleans up skill MCP tools and dispatches skill.ended.
+   */
+  async endSkill(skillId?: string): Promise<void> {
+    const id = skillId || this._activeSkillId
+    if (!id) return
+
+    // Find DB ID for endSkill call
+    const plugin = getNativeAgent()
+    try {
+      let dbSkillId = id
+      const existing = JSON.parse((await plugin.listSkills()).skillsJson)
+      const found = existing.find((s: any) => s.name === id)
+      if (found) dbSkillId = found.id
+      await plugin.endSkill({ skillId: dbSkillId })
+    } catch {
+      /* non-fatal */
+    }
+
+    // Remove skill tools from MCP
+    if (this._mcpManager && this._skillToolNames.length > 0) {
+      this._mcpManager.removeTools(this._skillToolNames)
+      // Re-register tools with native agent
+      const toolsJson = JSON.stringify(
+        this._mcpManager.getToolSchemas().map((tool) => ({ ...tool, webviewOnly: true })),
+      )
+      await plugin.startMcp({ toolsJson }).catch(() => {})
+      this._mcpToolCount = this._mcpManager.toolCount
+    }
+
+    const sessionKey = this._currentSessionKey
+    this._activeSkillId = null
+    this._skillEndRequested = false
+    this._skillToolNames = []
+    this._pendingSkillResults.clear()
+    this._dispatch({ type: 'skill.ended', skillId: id, sessionKey })
+  }
+
+  /**
+   * Convert skill tool definitions (with milestone, bridgeEvent, waitForResult,
+   * endsSkill, execute flags) into MCP-compatible DeviceTool objects.
+   */
+  private _buildSkillMcpTools(
+    skillId: string,
+    toolDefs: any[],
+    _config: Record<string, unknown>,
+  ): Array<{
+    name: string
+    description: string
+    inputSchema: Record<string, any>
+    execute: (args: any) => Promise<any>
+  }> {
+    return toolDefs.map((def) => ({
+      name: def.name,
+      description: def.description || '',
+      inputSchema: def.input_schema || def.inputSchema || { type: 'object', properties: {} },
+      execute: async (args: any) => {
+        // milestone tool — dispatch milestone event, return success
+        if (def.milestone) {
+          const milestoneId = args.milestone || def.name
+          this._dispatch({
+            type: `${skillId}.milestone`,
+            skillId,
+            milestone: milestoneId,
+            completedCount: 1,
+          })
+          return { success: true, milestone: milestoneId }
+        }
+
+        // bridgeEvent tool — dispatch event to WebView listeners
+        if (def.bridgeEvent) {
+          const requestId = `${def.name}-${Date.now()}`
+
+          if (def.waitForResult) {
+            // Suspend until WebView responds with skill.tool_result
+            return new Promise<any>((resolve) => {
+              this._pendingSkillResults.set(requestId, resolve)
+              this._dispatch({
+                type: def.bridgeEvent,
+                skillId,
+                requestId,
+                ...args,
+              })
+            })
+          }
+
+          // Fire-and-forget bridge event
+          this._dispatch({
+            type: def.bridgeEvent,
+            skillId,
+            ...args,
+          })
+          return { success: true }
+        }
+
+        // endsSkill tool — execute, then request skill end
+        if (def.endsSkill) {
+          let result: any = { success: true }
+          if (typeof def.execute === 'function') {
+            const ctx = {
+              dispatch: (msg: any) => this._dispatch(msg),
+              writeFile: (path: string, content: string) => this.writeFile(path, content),
+            }
+            result = await def.execute(args, ctx)
+          }
+          // Defer skill end until after agent.completed
+          this._skillEndRequested = true
+          return result
+        }
+
+        // Custom execute function
+        if (typeof def.execute === 'function') {
+          const ctx = {
+            dispatch: (msg: any) => this._dispatch(msg),
+            writeFile: (path: string, content: string) => this.writeFile(path, content),
+          }
+          return def.execute(args, ctx)
+        }
+
+        return { success: true }
+      },
+    }))
+  }
+
   /**
    * @deprecated Use respondToPreExecute. Kept for backward compat.
    */
@@ -437,6 +661,34 @@ export class MobileClawEngine {
         deny as boolean | undefined,
         denyReason as string | undefined,
       )
+    }
+    // Skill start — bridge to native startSkill
+    if (message.type === 'skill.start') {
+      const skillIdVal = message.skill as string
+      const configVal = (message.config as Record<string, unknown>) || {}
+      const providerVal = message.provider as string | undefined
+      try {
+        await this.startSkill(skillIdVal, configVal, providerVal)
+      } catch (err: any) {
+        console.error('[MobileClaw] Skill start failed:', err)
+        this._dispatch({ type: 'agent.error', error: err.message || 'Skill start failed' })
+      }
+      return
+    }
+    // Skill end
+    if (message.type === 'skill.end') {
+      await this.endSkill(message.skill as string).catch(() => {})
+      return
+    }
+    // Skill tool result — resolve pending waitForResult promise
+    if (message.type === 'skill.tool_result') {
+      const requestId = (message as any).requestId as string
+      const resolver = requestId ? this._pendingSkillResults.get(requestId) : undefined
+      if (resolver) {
+        this._pendingSkillResults.delete(requestId)
+        resolver((message as any).result ?? { success: true })
+      }
+      return
     }
     // Route other messages locally
     this._dispatch(message as any)
@@ -770,6 +1022,25 @@ export class MobileClawEngine {
       if (agentTypes.includes(msg.type)) {
         msg.skill = this._activeSkillId
       }
+    }
+
+    // Deferred skill end: when endsSkill tool was called, wait for agent.completed
+    // before dispatching skill.ended (so the agent finishes its turn cleanly)
+    if (msg.type === 'agent.completed' && this._skillEndRequested && this._activeSkillId) {
+      this._skillEndRequested = false
+      const skillId = this._activeSkillId
+      const sessionKey = this._currentSessionKey
+      // Clean up skill tools from MCP before clearing names
+      if (this._mcpManager && this._skillToolNames.length > 0) {
+        this._mcpManager.removeTools(this._skillToolNames)
+      }
+      this._activeSkillId = null
+      this._skillToolNames = []
+      this._pendingSkillResults.clear()
+      // Dispatch agent.completed first, then skill.ended
+      queueMicrotask(() => {
+        this._dispatch({ type: 'skill.ended', skillId, sessionKey })
+      })
     }
 
     // Type-specific handlers
