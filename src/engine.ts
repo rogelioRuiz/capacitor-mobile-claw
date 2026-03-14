@@ -494,11 +494,13 @@ export class MobileClawEngine {
     }
 
     // Build launch config for native startSkill
+    // allowedToolsJson restricts the agent to ONLY skill tools — no builtin tools
     const launch = {
       prompt: `[hidden] ${(config.kickoff as string) || `Run skill ${skillId}`}`,
       systemPrompt: (config.systemPrompt as string) || '',
       model: config.model,
       maxTurns: (config.maxTurns as number) || 25,
+      allowedToolsJson: JSON.stringify(this._skillToolNames),
     }
 
     // Find the skill ID in DB (native needs the DB ID, not our name)
