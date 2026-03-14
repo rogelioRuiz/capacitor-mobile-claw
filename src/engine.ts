@@ -387,6 +387,16 @@ export class MobileClawEngine {
   ): Promise<{ sessionKey: string }> {
     const plugin = getNativeAgent()
 
+    // Skill follow-up: reuse skill session via native followUp.
+    // This preserves the skill's system prompt, allowed tools, and prior messages
+    // across turns — matching the old JS agent's persistent _skillAgent pattern.
+    // The Rust agent loop emits user_message automatically (skip_user_echo=false).
+    if (this._activeSkillId && this._currentSessionKey) {
+      const sessionKey = this._currentSessionKey
+      await plugin.followUp({ prompt })
+      return { sessionKey }
+    }
+
     if (!this._currentSessionKey) {
       this._currentSessionKey = `session-${Date.now()}`
     }
@@ -496,7 +506,7 @@ export class MobileClawEngine {
     // Build launch config for native startSkill
     // allowedToolsJson restricts the agent to ONLY skill tools — no builtin tools
     const launch = {
-      prompt: `[hidden] ${(config.kickoff as string) || `Run skill ${skillId}`}`,
+      prompt: (config.kickoff as string) || `Run skill ${skillId}`,
       systemPrompt: (config.systemPrompt as string) || '',
       model: config.model,
       maxTurns: (config.maxTurns as number) || 25,
