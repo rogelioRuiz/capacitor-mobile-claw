@@ -749,6 +749,13 @@ export class MobileClawEngine {
   }
 
   private _dispatch(msg: any): void {
+    // Track active skill for event tagging
+    if (msg.type === 'skill.session_started' && msg.skillId) {
+      this._activeSkillId = msg.skillId
+    } else if (msg.type === 'skill.ended') {
+      this._activeSkillId = null
+    }
+
     // Tag agent events with active skill ID
     if (this._activeSkillId && !msg.skill) {
       const agentTypes = [
