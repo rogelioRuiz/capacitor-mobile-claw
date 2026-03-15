@@ -1,0 +1,12 @@
+{
+  "name": "rogelioRuiz/capacitor-mobile-claw",
+  "description": "On-device AI agent engine for mobile apps — embedded Node.js worker with Claude LLM, file tools, code execution, git, and extensible MCP device tools",
+  "accepts": [
+    {
+      "network": "eip155:8453",
+      "asset": "USDC",
+      "address": "YOUR_WALLET_ADDRESS"
+    }
+  ],
+  "resources": []
+}
