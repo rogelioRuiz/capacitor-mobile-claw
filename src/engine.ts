@@ -76,6 +76,14 @@ export class MobileClawEngine {
   private _skillEndRequested = false
   private _skillToolNames: string[] = []
   private _pendingSkillResults = new Map<string, (result: any) => void>()
+  // Skill session config — preserved across turns (mirrors old JS _skillAgent)
+  private _skillSystemPrompt = ''
+  private _skillAllowedToolsJson = ''
+  private _skillModel: string | undefined
+  private _skillProvider: string | undefined
+  private _skillMaxTurns = 25
+  private _skillMessages: any[] = [] // Authoritative message history from Rust
+  private _skillTurnInFlight = false
 
   // ── Public getters ─────────────────────────────────────────────────────
 
@@ -245,9 +253,19 @@ export class MobileClawEngine {
         this._dispatch({ type: 'agent.event', eventType: 'user_message', data: payload })
         break
       case 'agent.completed':
+        // Capture authoritative message history from Rust for skill multi-turn
+        if (this._activeSkillId && payload.messagesJson) {
+          try {
+            this._skillMessages = JSON.parse(payload.messagesJson)
+          } catch {
+            /* keep existing */
+          }
+        }
+        this._skillTurnInFlight = false
         this._dispatch({ type: 'agent.completed', ...payload })
         break
       case 'agent.error':
+        this._skillTurnInFlight = false
         this._dispatch({ type: 'agent.error', ...payload })
         break
       case 'approval_request':
@@ -387,13 +405,34 @@ export class MobileClawEngine {
   ): Promise<{ sessionKey: string }> {
     const plugin = getNativeAgent()
 
-    // Skill follow-up: reuse skill session via native followUp.
-    // This preserves the skill's system prompt, allowed tools, and prior messages
-    // across turns — matching the old JS agent's persistent _skillAgent pattern.
-    // The Rust agent loop emits user_message automatically (skip_user_echo=false).
+    // Skill follow-up: use sendMessage with explicit skill params + prior messages.
+    // This mirrors the old JS agent where _skillAgent accumulated messages internally
+    // and each turn reused the same agent instance with the same system prompt/tools.
     if (this._activeSkillId && this._currentSessionKey) {
       const sessionKey = this._currentSessionKey
-      await plugin.followUp({ prompt })
+
+      // Abort in-flight turn before sending new message (matches old JS agent pattern)
+      if (this._skillTurnInFlight) {
+        await plugin.abort()
+        await this._waitForSkillTurnComplete()
+        this._dispatch({
+          type: 'agent.event',
+          eventType: 'interrupted',
+          data: { reason: 'New message sent while streaming' },
+        })
+      }
+
+      this._skillTurnInFlight = true
+      await plugin.sendMessage({
+        prompt,
+        sessionKey,
+        model: this._skillModel,
+        provider: this._skillProvider,
+        systemPrompt: this._skillSystemPrompt,
+        maxTurns: this._skillMaxTurns,
+        allowedToolsJson: this._skillAllowedToolsJson,
+        priorMessagesJson: JSON.stringify(this._skillMessages),
+      })
       return { sessionKey }
     }
 
@@ -412,6 +451,38 @@ export class MobileClawEngine {
     })
 
     return { sessionKey }
+  }
+
+  /** Wait for the current skill turn to complete (agent.completed or agent.error). */
+  private _waitForSkillTurnComplete(): Promise<void> {
+    if (!this._skillTurnInFlight) return Promise.resolve()
+    return new Promise<void>((resolve) => {
+      const timeout = setTimeout(() => {
+        this._skillTurnInFlight = false
+        resolve()
+      }, 5000)
+      const cleanup = () => {
+        clearTimeout(timeout)
+        unsub1()
+        unsub2()
+      }
+      const unsub1 = this._onMessage(
+        'agent.completed',
+        () => {
+          cleanup()
+          resolve()
+        },
+        { once: true },
+      )
+      const unsub2 = this._onMessage(
+        'agent.error',
+        () => {
+          cleanup()
+          resolve()
+        },
+        { once: true },
+      )
+    })
   }
 
   async stopTurn(): Promise<void> {
@@ -534,6 +605,15 @@ export class MobileClawEngine {
     this._skillEndRequested = false
     this._currentSessionKey = sessionKey
 
+    // Store skill config for follow-up turns (mirrors old JS _skillAgent persistence)
+    this._skillSystemPrompt = launch.systemPrompt
+    this._skillAllowedToolsJson = launch.allowedToolsJson
+    this._skillModel = (config.model as string) || undefined
+    this._skillProvider = provider || 'anthropic'
+    this._skillMaxTurns = launch.maxTurns
+    this._skillMessages = []
+    this._skillTurnInFlight = true // Kickoff turn is now running in Rust
+
     // Dispatch session_started so consumer listeners pick it up
     this._dispatch({
       type: 'skill.session_started',
@@ -579,6 +659,13 @@ export class MobileClawEngine {
     this._skillEndRequested = false
     this._skillToolNames = []
     this._pendingSkillResults.clear()
+    this._skillSystemPrompt = ''
+    this._skillAllowedToolsJson = ''
+    this._skillModel = undefined
+    this._skillProvider = undefined
+    this._skillMaxTurns = 25
+    this._skillMessages = []
+    this._skillTurnInFlight = false
     this._dispatch({ type: 'skill.ended', skillId: id, sessionKey })
   }
 
@@ -1056,6 +1143,13 @@ export class MobileClawEngine {
       this._activeSkillId = null
       this._skillToolNames = []
       this._pendingSkillResults.clear()
+      this._skillSystemPrompt = ''
+      this._skillAllowedToolsJson = ''
+      this._skillModel = undefined
+      this._skillProvider = undefined
+      this._skillMaxTurns = 25
+      this._skillMessages = []
+      this._skillTurnInFlight = false
       // Dispatch agent.completed first, then skill.ended
       queueMicrotask(() => {
         this._dispatch({ type: 'skill.ended', skillId, sessionKey })
