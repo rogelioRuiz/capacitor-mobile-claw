@@ -225,6 +225,9 @@ export class MobileClawEngine {
   // ── Native event → local dispatch bridge ──────────────────────────────
 
   private _handleNativeEvent(eventType: string, payload: any): void {
+    if (eventType !== 'text_delta' && eventType !== 'thinking') {
+      console.log(`[MCE:native] ${eventType}`, JSON.stringify(payload).slice(0, 200))
+    }
     switch (eventType) {
       case 'text_delta':
         this._dispatch({ type: 'agent.event', eventType: 'text_delta', data: { text: payload.text } })
@@ -299,6 +302,8 @@ export class MobileClawEngine {
     const toolName = typeof payload?.toolName === 'string' ? payload.toolName : ''
     const args = payload?.args && typeof payload.args === 'object' ? payload.args : {}
 
+    console.log(`[MCE:mcp] tool=${toolName} id=${toolCallId}`, args)
+
     if (!toolCallId || !toolName) return
 
     try {
@@ -306,12 +311,14 @@ export class MobileClawEngine {
         throw new Error('MCP manager is not initialized')
       }
       const result = await this._mcpManager.executeTool(toolName, args)
+      console.log(`[MCE:mcp] result tool=${toolName}`, result)
       await plugin.respondToMcpTool({
         toolCallId,
         resultJson: JSON.stringify(result ?? null),
         isError: false,
       })
     } catch (error: any) {
+      console.error(`[MCE:mcp] ERROR tool=${toolName}`, error?.message || error)
       await plugin
         .respondToMcpTool({
           toolCallId,
@@ -391,6 +398,7 @@ export class MobileClawEngine {
     // system prompt, allowed tools, model — followUp() reads it automatically.
     // Mirrors pi-agent-core where agent.prompt() reused the same Agent instance.
     if (this._activeSkillId && this._currentSessionKey) {
+      console.log(`[MCE:send] followUp skill=${this._activeSkillId} session=${this._currentSessionKey}`)
       await plugin.followUp({ prompt })
       return { sessionKey: this._currentSessionKey }
     }
@@ -399,6 +407,7 @@ export class MobileClawEngine {
       this._currentSessionKey = `session-${Date.now()}`
     }
     const sessionKey = this._currentSessionKey
+    console.log(`[MCE:send] sendMessage session=${sessionKey} activeSkill=${this._activeSkillId}`)
 
     await plugin.sendMessage({
       prompt,
@@ -455,6 +464,7 @@ export class MobileClawEngine {
     config: Record<string, unknown>,
     provider?: string,
   ): Promise<{ sessionKey: string }> {
+    console.log(`[MCE:skill] startSkill id=${skillId} provider=${provider}`)
     const plugin = getNativeAgent()
 
     // Build MCP tools from skill tool definitions and register them
@@ -630,6 +640,7 @@ export class MobileClawEngine {
           }
 
           // Fire-and-forget bridge event
+          console.log(`[MCE:bridge] dispatch event=${def.bridgeEvent} tool=${def.name}`, args)
           this._dispatch({
             type: def.bridgeEvent,
             skillId,
@@ -640,6 +651,7 @@ export class MobileClawEngine {
 
         // endsSkill tool — execute, then request skill end
         if (def.endsSkill) {
+          console.log(`[MCE:bridge] endsSkill tool=${def.name}`)
           let result: any = { success: true }
           if (typeof def.execute === 'function') {
             const ctx = {
@@ -1019,6 +1031,7 @@ export class MobileClawEngine {
   }
 
   private _dispatch(msg: any): void {
+    console.log(`[MCE:dispatch] ${msg.type}`, msg.skillId || msg.skill || '')
     // Track active skill for event tagging
     if (msg.type === 'skill.session_started' && msg.skillId) {
       this._activeSkillId = msg.skillId
@@ -1045,12 +1058,21 @@ export class MobileClawEngine {
     // Deferred skill end: when endsSkill tool was called, wait for agent.completed
     // before dispatching skill.ended (so the agent finishes its turn cleanly)
     if (msg.type === 'agent.completed' && this._skillEndRequested && this._activeSkillId) {
+      console.log(`[MCE:dispatch] DEFERRED SKILL END skill=${this._activeSkillId} session=${this._currentSessionKey}`)
       this._skillEndRequested = false
       const skillId = this._activeSkillId
       const sessionKey = this._currentSessionKey
       // Clean up skill tools from MCP before clearing names
       if (this._mcpManager && this._skillToolNames.length > 0) {
         this._mcpManager.removeTools(this._skillToolNames)
+        // Re-sync remaining tools with native agent (matches direct endSkill path)
+        const toolsJson = JSON.stringify(
+          this._mcpManager.getToolSchemas().map((tool) => ({ ...tool, webviewOnly: true })),
+        )
+        getNativeAgent()
+          .startMcp({ toolsJson })
+          .catch(() => {})
+        this._mcpToolCount = this._mcpManager.toolCount
       }
       this._activeSkillId = null
       this._skillToolNames = []
