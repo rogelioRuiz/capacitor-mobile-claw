@@ -41,6 +41,58 @@ import { McpServerManager, type McpServerOptions } from './mcp/mcp-server-manage
 type MessageHandler = (msg: any) => void
 
 /**
+ * Normalize session messages from Anthropic API format (embedded tool_use blocks
+ * inside assistant content arrays) into the live-event format (separate tool_use
+ * and tool_result rows). This ensures loadSessionHistory returns the same message
+ * shape as live bridge events, so the UI renders identically on reload.
+ */
+function normalizeSessionMessages(msgs: any[]): any[] {
+  const result: any[] = []
+  let seq = 0
+  for (const msg of msgs) {
+    seq = Math.max(seq, msg.sequence || 0)
+    if (msg.role === 'assistant' && Array.isArray(msg.content)) {
+      const textBlocks = msg.content.filter((b: any) => b.type === 'text' && b.text)
+      const toolUseBlocks = msg.content.filter((b: any) => b.type === 'tool_use' && b.id)
+
+      if (toolUseBlocks.length === 0) {
+        result.push(msg)
+        continue
+      }
+
+      // Emit assistant message with only text content (if any)
+      if (textBlocks.length > 0) {
+        result.push({ ...msg, content: textBlocks })
+      }
+
+      // Explode each embedded tool_use block into a separate row
+      for (const block of toolUseBlocks) {
+        result.push({
+          uuid: `mc-tc-${block.id}`,
+          role: 'tool_use',
+          tool_use_id: block.id,
+          tool_name: block.name || 'tool',
+          content: block.input || null,
+          created_at: msg.created_at,
+          sequence: ++seq,
+        })
+      }
+    } else if (msg.role === 'tool_result' && !msg.uuid) {
+      // Ensure tool_result rows have stable UUIDs
+      const tuId = msg.tool_use_id || null
+      result.push({
+        ...msg,
+        uuid: tuId ? `mc-tr-${tuId}` : `mc-tr-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        sequence: msg.sequence || ++seq,
+      })
+    } else {
+      result.push(msg)
+    }
+  }
+  return result
+}
+
+/**
  * Get the NativeAgent plugin synchronously.
  * IMPORTANT: Never await a Capacitor registerPlugin proxy — it returns a
  * Proxy with a .then trap that hangs forever. Always access synchronously.
@@ -905,7 +957,7 @@ export class MobileClawEngine {
   async loadSessionHistory(sessionKey: string, _agentId = 'main'): Promise<SessionHistoryResult> {
     const result = await getNativeAgent().loadSession({ sessionKey, agentId: _agentId })
     const messages = JSON.parse(result.messagesJson)
-    return { sessionKey, messages }
+    return { sessionKey, messages: normalizeSessionMessages(messages) }
   }
 
   async resumeSession(
