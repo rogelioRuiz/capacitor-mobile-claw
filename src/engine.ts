@@ -1039,7 +1039,10 @@ export class MobileClawEngine {
       this._activeSkillId = null
     }
 
-    // Tag agent events with active skill ID
+    // Tag agent events with active skill ID — but only if they belong to the
+    // current session. Stale events from a previous skill's in-flight turn
+    // carry a different sessionKey and are discarded to prevent mis-attribution
+    // (e.g. setup agent's trailing events leaking into the accounts skill).
     if (this._activeSkillId && !msg.skill) {
       const agentTypes = [
         'agent.event',
@@ -1051,6 +1054,13 @@ export class MobileClawEngine {
         'tool.pre_execute.expired',
       ]
       if (agentTypes.includes(msg.type)) {
+        const eventSession = msg.sessionKey || msg.data?.sessionKey
+        if (eventSession && this._currentSessionKey && eventSession !== this._currentSessionKey) {
+          console.log(
+            `[MCE:dispatch] DROP stale ${msg.type} session=${eventSession} current=${this._currentSessionKey}`,
+          )
+          return
+        }
         msg.skill = this._activeSkillId
       }
     }
