@@ -376,6 +376,8 @@ export type MobileClawEventName =
   | 'cronNotification'
   | 'schedulerStatus'
   | 'schedulerOverdue'
+  | 'backgroundSurface'
+  | 'cronApprovalRequest'
 
 export type MobileClawEvent =
   | AgentEvent
@@ -393,6 +395,8 @@ export type MobileClawEvent =
   | CronNotificationEvent
   | SchedulerStatusEvent
   | SchedulerOverdueEvent
+  | BackgroundSurfaceEvent
+  | CronApprovalRequestEvent
 
 export interface AgentEvent {
   eventType: 'text_delta' | 'tool_use' | 'tool_result' | 'thinking' | 'error'
@@ -480,4 +484,27 @@ export interface SchedulerStatusEvent {
 
 export interface SchedulerOverdueEvent {
   [key: string]: unknown
+}
+
+export interface BackgroundSurfaceEvent {
+  jobId?: string
+  jobName?: string
+  title?: string
+  summary?: string
+  priority?: string
+  status?: string
+  durationMs?: number
+  error?: string
+  source?: string
+  timestamp?: number
+}
+
+export interface CronApprovalRequestEvent {
+  toolName?: string
+  toolCallId?: string
+  args?: Record<string, unknown>
+  _cronContext?: {
+    jobId: string
+    jobName: string
+  }
 }

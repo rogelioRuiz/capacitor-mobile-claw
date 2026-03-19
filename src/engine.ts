@@ -287,6 +287,12 @@ export class MobileClawEngine {
       case 'cron.notification':
         this._dispatch({ type: 'cron.notification', ...payload })
         break
+      case 'background.surface':
+        this._dispatch({ type: 'background.surface', ...payload })
+        break
+      case 'cron.approval_request':
+        this._dispatch({ type: 'cron.approval_request', ...payload })
+        break
       case 'scheduler.status':
         this._dispatch({ type: 'scheduler.status', ...payload })
         break
@@ -853,6 +859,11 @@ export class MobileClawEngine {
     return this.listCronRuns({ jobId, limit })
   }
 
+  async loadSurfacedMessages(limit = 50): Promise<any[]> {
+    const result = await getNativeAgent().loadSurfacedMessages({ limit })
+    return result?.messagesJson ? JSON.parse(result.messagesJson) : []
+  }
+
   async addSkill(skill: CronSkillInput): Promise<CronSkillRecord> {
     const result = await getNativeAgent().addSkill({ inputJson: JSON.stringify(skill) })
     return JSON.parse(result.recordJson)
@@ -986,6 +997,8 @@ export class MobileClawEngine {
     cronNotification: 'cron.notification',
     schedulerStatus: 'scheduler.status',
     schedulerOverdue: 'scheduler.overdue',
+    backgroundSurface: 'background.surface',
+    cronApprovalRequest: 'cron.approval_request',
   }
 
   addListener(eventName: MobileClawEventName, handler: (event: MobileClawEvent) => void): { remove: () => void } {
@@ -1033,6 +1046,27 @@ export class MobileClawEngine {
 
   private _dispatch(msg: any): void {
     console.log(`[MCE:dispatch] ${msg.type}`, msg.skillId || msg.skill || '')
+
+    // Defense-in-depth: drop leaked background agent events.
+    // Background sessions use sessionKey "cron-<jobId>". If any streaming event
+    // leaks through the Rust BackgroundEventFilter, drop it here.
+    const eventSession = msg.sessionKey || msg.data?.sessionKey
+    if (eventSession && typeof eventSession === 'string' && eventSession.startsWith('cron-')) {
+      const allowedCronTypes = [
+        'background.surface',
+        'cron.job.started',
+        'cron.job.completed',
+        'cron.job.error',
+        'cron.notification',
+        'cron.approval_request',
+        'cron.approval_expired',
+      ]
+      if (!allowedCronTypes.includes(msg.type)) {
+        console.log(`[MCE:dispatch] DROP background leak ${msg.type} session=${eventSession}`)
+        return
+      }
+    }
+
     // Track active skill for event tagging
     if (msg.type === 'skill.session_started' && msg.skillId) {
       this._activeSkillId = msg.skillId
