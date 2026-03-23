@@ -72,6 +72,7 @@ export class MobileClawEngine {
   private _mcpManager: McpServerManager | null = null
   private _mobileCron: any = null
   // ── Skill state (UI bridge only — agent loop is in Rust) ────────────
+  private static SESSION_KEY_STORAGE = 'mce:currentSessionKey'
   private _activeSkillId: string | null = null
   private _skillEndRequested = false
   private _skillToolNames: string[] = []
@@ -117,6 +118,22 @@ export class MobileClawEngine {
   /** @deprecated Agent runner is in Rust. */
   get agentRunner(): null {
     return null
+  }
+
+  // ── Session key persistence ───────────────────────────────────────────
+
+  /**
+   * Persist _currentSessionKey to localStorage so it survives app kill.
+   * On restart, _doInit() restores it and sendMessage() auto-resumes
+   * the Rust session from its SQLite DB.
+   */
+  private _persistSessionKey(key: string | null) {
+    try {
+      if (key) localStorage.setItem(MobileClawEngine.SESSION_KEY_STORAGE, key)
+      else localStorage.removeItem(MobileClawEngine.SESSION_KEY_STORAGE)
+    } catch {
+      /* localStorage unavailable — non-fatal */
+    }
   }
 
   // ── Lifecycle ──────────────────────────────────────────────────────────
@@ -170,6 +187,23 @@ export class MobileClawEngine {
           this._handleNativeEvent(event.eventType, { raw: event.payloadJson })
         }
       })
+
+      // ── Restore session key from previous app session ────────────────
+      // _currentSessionKey is in-memory and lost on app kill. Restore from
+      // localStorage so sendMessage() does followUp (with auto-resume)
+      // instead of creating a new session and losing conversation history.
+      try {
+        const savedKey = localStorage.getItem(MobileClawEngine.SESSION_KEY_STORAGE)
+        console.log(
+          `[TRACE:engine] init localStorage savedKey=${savedKey} _currentSessionKey=${this._currentSessionKey}`,
+        )
+        if (savedKey && !this._currentSessionKey) {
+          this._currentSessionKey = savedKey
+          console.log(`[TRACE:engine] init RESTORED session key=${savedKey}`)
+        }
+      } catch {
+        /* localStorage unavailable */
+      }
 
       // ── MCP server (device tools — need WebView Capacitor APIs) ──────
       this._loadingPhase = 'starting MCP'
@@ -400,20 +434,50 @@ export class MobileClawEngine {
   ): Promise<{ sessionKey: string }> {
     const plugin = getNativeAgent()
 
-    // Skill follow-up: Rust current_session already has accumulated messages,
-    // system prompt, allowed tools, model — followUp() reads it automatically.
-    // Mirrors pi-agent-core where agent.prompt() reused the same Agent instance.
-    if (this._activeSkillId && this._currentSessionKey) {
-      console.log(`[MCE:send] followUp skill=${this._activeSkillId} session=${this._currentSessionKey}`)
-      await plugin.followUp({ prompt })
-      return { sessionKey: this._currentSessionKey }
+    console.log(
+      `[TRACE:engine] sendMessage ENTER _currentSessionKey=${this._currentSessionKey} _activeSkillId=${this._activeSkillId} prompt_len=${prompt.length}`,
+    )
+
+    // Follow-up on existing session: Rust current_session already has accumulated
+    // messages, system prompt, allowed tools, model — followUp() reads it
+    // automatically. Works for both skill sessions and regular main chat.
+    // Without this, each turn starts fresh (no prior context) and save_session's
+    // skip(existing_count) logic silently drops new messages.
+    if (this._currentSessionKey) {
+      try {
+        console.log(`[TRACE:engine] attempting followUp session=${this._currentSessionKey}`)
+        await plugin.followUp({ prompt })
+        console.log(`[TRACE:engine] followUp SUCCESS session=${this._currentSessionKey}`)
+        return { sessionKey: this._currentSessionKey }
+      } catch (followUpErr) {
+        // Rust current_session was lost (app kill/restart) — auto-resume from DB
+        // then retry. This is the foundational fix: localStorage preserved the key,
+        // so we know WHICH session to resume; Rust has the full history in SQLite.
+        console.log(`[TRACE:engine] followUp FAILED session=${this._currentSessionKey} error=`, followUpErr)
+        try {
+          console.log(`[TRACE:engine] auto-resume attempt session=${this._currentSessionKey}`)
+          await this.resumeSession(this._currentSessionKey, 'main')
+          console.log(`[TRACE:engine] auto-resume OK, retrying followUp`)
+          await plugin.followUp({ prompt })
+          console.log(`[TRACE:engine] followUp after auto-resume SUCCESS`)
+          return { sessionKey: this._currentSessionKey }
+        } catch (resumeErr) {
+          // Resume also failed — session may be corrupted or deleted.
+          // Fall through to create a new session.
+          console.warn(`[TRACE:engine] auto-resume FAILED, will create new session`, resumeErr)
+          this._currentSessionKey = null
+          this._persistSessionKey(null)
+        }
+      }
+    } else {
+      console.log(`[TRACE:engine] _currentSessionKey is NULL — skipping followUp`)
     }
 
-    if (!this._currentSessionKey) {
-      this._currentSessionKey = `session-${Date.now()}`
-    }
+    // New session — no prior context
+    this._currentSessionKey = `session-${Date.now()}`
+    this._persistSessionKey(this._currentSessionKey)
     const sessionKey = this._currentSessionKey
-    console.log(`[MCE:send] sendMessage session=${sessionKey} activeSkill=${this._activeSkillId}`)
+    console.log(`[TRACE:engine] creating NEW session=${sessionKey}`)
 
     await plugin.sendMessage({
       prompt,
@@ -424,6 +488,7 @@ export class MobileClawEngine {
       maxTurns: 25,
     })
 
+    console.log(`[TRACE:engine] sendMessage dispatched for NEW session=${sessionKey}`)
     return { sessionKey }
   }
 
@@ -547,6 +612,7 @@ export class MobileClawEngine {
     this._activeSkillId = skillId
     this._skillEndRequested = false
     this._currentSessionKey = sessionKey
+    this._persistSessionKey(sessionKey)
 
     // Dispatch session_started so consumer listeners pick it up
     this._dispatch({
@@ -594,6 +660,7 @@ export class MobileClawEngine {
     this._skillToolNames = []
     this._pendingSkillResults.clear()
     this._currentSessionKey = null // Reset so next sendMessage creates fresh main session
+    this._persistSessionKey(null)
     this._dispatch({ type: 'skill.ended', skillId: id, sessionKey })
   }
 
@@ -748,7 +815,9 @@ export class MobileClawEngine {
     if (action === 'setOAuth') {
       const accessToken = typeof config.accessToken === 'string' ? config.accessToken.trim() : ''
       if (!accessToken) throw new Error('Missing accessToken for setOAuth')
-      await plugin.setAuthKey({ key: accessToken, provider, authType: 'oauth' })
+      const refresh = typeof config.refreshToken === 'string' ? config.refreshToken : undefined
+      const expiresAt = typeof config.expiresAt === 'number' ? config.expiresAt : undefined
+      await plugin.setAuthKey({ key: accessToken, provider, authType: 'oauth', refresh, expiresAt })
       return
     }
 
@@ -926,6 +995,7 @@ export class MobileClawEngine {
     options?: { messages?: any[]; provider?: string; model?: string },
   ): Promise<{ success: boolean; error?: string; sessionKey?: string; messageCount?: number }> {
     this._currentSessionKey = sessionKey
+    this._persistSessionKey(sessionKey)
     try {
       await getNativeAgent().resumeSession({
         sessionKey,
@@ -941,7 +1011,9 @@ export class MobileClawEngine {
   }
 
   async clearConversation(): Promise<{ success: boolean }> {
+    console.log(`[TRACE:engine] clearConversation clearing _currentSessionKey (was ${this._currentSessionKey})`)
     this._currentSessionKey = null
+    this._persistSessionKey(null)
     // Only clear in-memory session state on the native side.
     // Don't delete the session from the DB — it should remain in the
     // session index so the user can switch back to it later.
@@ -952,7 +1024,9 @@ export class MobileClawEngine {
   }
 
   async setSessionKey(sessionKey: string): Promise<void> {
+    console.log(`[TRACE:engine] setSessionKey new=${sessionKey} old=${this._currentSessionKey}`)
     this._currentSessionKey = sessionKey
+    this._persistSessionKey(sessionKey)
   }
 
   async getSessionKey(): Promise<{ sessionKey: string | null }> {
@@ -1122,7 +1196,9 @@ export class MobileClawEngine {
       this._activeSkillId = null
       this._skillToolNames = []
       this._pendingSkillResults.clear()
+      console.log(`[TRACE:engine] SKILL END clearing _currentSessionKey (was ${this._currentSessionKey})`)
       this._currentSessionKey = null // Reset so next sendMessage creates fresh main session
+      this._persistSessionKey(null)
       // Dispatch agent.completed first, then skill.ended
       queueMicrotask(() => {
         this._dispatch({ type: 'skill.ended', skillId, sessionKey })
