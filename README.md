@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/rogelioruiz-capacitor-mobile-claw-badge.png)](https://mseep.ai/app/rogelioruiz-capacitor-mobile-claw)
+
 # Mobile Claw
 
 [![npm](https://img.shields.io/npm/v/capacitor-mobile-claw)](https://www.npmjs.com/package/capacitor-mobile-claw)
