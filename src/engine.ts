@@ -65,6 +65,18 @@ export class MobileClawEngine {
   private _loading = false
   private _error: string | null = null
   private _currentSessionKey: string | null = null
+  /**
+   * The provider/model the FFI's current_session was last seeded with. The
+   * Rust agent loop honors per-call provider/model overrides only on
+   * sendMessage (new session) and resumeSession; followUp reuses the
+   * session's existing binding. To make a mid-conversation provider switch
+   * work — when the host's prefs flip from anthropic to kimi between
+   * turns — we re-bind via resumeSession before followUp whenever the
+   * caller's requested provider/model differs from these last-known
+   * values. Tracked in JS to avoid an extra round-trip per turn.
+   */
+  private _activeProvider: string | null = null
+  private _activeModel: string | null = null
   private _loadingPhase: string = 'starting'
 
   private listeners = new Map<string, Set<MessageHandler>>()
@@ -438,12 +450,41 @@ export class MobileClawEngine {
       `[TRACE:engine] sendMessage ENTER _currentSessionKey=${this._currentSessionKey} _activeSkillId=${this._activeSkillId} prompt_len=${prompt.length}`,
     )
 
+    const requestedProvider = options?.provider ?? null
+    const requestedModel = options?.model ?? null
+
     // Follow-up on existing session: Rust current_session already has accumulated
     // messages, system prompt, allowed tools, model — followUp() reads it
     // automatically. Works for both skill sessions and regular main chat.
     // Without this, each turn starts fresh (no prior context) and save_session's
     // skip(existing_count) logic silently drops new messages.
     if (this._currentSessionKey) {
+      // Mid-conversation provider/model switch: followUp() reuses the
+      // session's existing binding, so a host pref change (e.g. default
+      // provider flipped from anthropic to kimi) wouldn't take effect
+      // until the user manually clears the conversation. Detect the
+      // mismatch and re-bind via resumeSession before the followUp.
+      const providerChanged = requestedProvider !== null && requestedProvider !== this._activeProvider
+      const modelChanged = requestedModel !== null && requestedModel !== this._activeModel
+      if (providerChanged || modelChanged) {
+        console.log(
+          `[TRACE:engine] provider/model switch ${this._activeProvider}/${this._activeModel} → ${requestedProvider}/${requestedModel} — rebinding session=${this._currentSessionKey}`,
+        )
+        try {
+          await plugin.resumeSession({
+            sessionKey: this._currentSessionKey,
+            agentId: 'main',
+            provider: requestedProvider ?? undefined,
+            model: requestedModel ?? undefined,
+          })
+          if (requestedProvider !== null) this._activeProvider = requestedProvider
+          if (requestedModel !== null) this._activeModel = requestedModel
+        } catch (rebindErr) {
+          // Rebind failed — fall through to followUp anyway. The catch
+          // branch below handles auto-resume on followUp failure.
+          console.warn(`[TRACE:engine] rebind FAILED — will try followUp directly`, rebindErr)
+        }
+      }
       try {
         console.log(`[TRACE:engine] attempting followUp session=${this._currentSessionKey}`)
         await plugin.followUp({ prompt })
@@ -456,7 +497,12 @@ export class MobileClawEngine {
         console.log(`[TRACE:engine] followUp FAILED session=${this._currentSessionKey} error=`, followUpErr)
         try {
           console.log(`[TRACE:engine] auto-resume attempt session=${this._currentSessionKey}`)
-          await this.resumeSession(this._currentSessionKey, 'main')
+          await this.resumeSession(this._currentSessionKey, 'main', {
+            provider: requestedProvider ?? undefined,
+            model: requestedModel ?? undefined,
+          })
+          if (requestedProvider !== null) this._activeProvider = requestedProvider
+          if (requestedModel !== null) this._activeModel = requestedModel
           console.log(`[TRACE:engine] auto-resume OK, retrying followUp`)
           await plugin.followUp({ prompt })
           console.log(`[TRACE:engine] followUp after auto-resume SUCCESS`)
@@ -467,6 +513,8 @@ export class MobileClawEngine {
           console.warn(`[TRACE:engine] auto-resume FAILED, will create new session`, resumeErr)
           this._currentSessionKey = null
           this._persistSessionKey(null)
+          this._activeProvider = null
+          this._activeModel = null
         }
       }
     } else {
@@ -477,16 +525,19 @@ export class MobileClawEngine {
     this._currentSessionKey = `session-${Date.now()}`
     this._persistSessionKey(this._currentSessionKey)
     const sessionKey = this._currentSessionKey
-    console.log(`[TRACE:engine] creating NEW session=${sessionKey}`)
+    const newProvider = requestedProvider || 'anthropic'
+    console.log(`[TRACE:engine] creating NEW session=${sessionKey} provider=${newProvider} model=${requestedModel}`)
 
     await plugin.sendMessage({
       prompt,
       sessionKey,
-      model: options?.model,
-      provider: options?.provider || 'anthropic',
+      model: requestedModel ?? undefined,
+      provider: newProvider,
       systemPrompt: '',
       maxTurns: 25,
     })
+    this._activeProvider = newProvider
+    this._activeModel = requestedModel
 
     console.log(`[TRACE:engine] sendMessage dispatched for NEW session=${sessionKey}`)
     return { sessionKey }
@@ -1026,6 +1077,8 @@ export class MobileClawEngine {
     console.log(`[TRACE:engine] clearConversation clearing _currentSessionKey (was ${this._currentSessionKey})`)
     this._currentSessionKey = null
     this._persistSessionKey(null)
+    this._activeProvider = null
+    this._activeModel = null
     // Only clear in-memory session state on the native side.
     // Don't delete the session from the DB — it should remain in the
     // session index so the user can switch back to it later.
