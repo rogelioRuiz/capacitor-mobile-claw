@@ -240,6 +240,8 @@ export interface MobileClawReadyInfo {
 export interface AuthStatus {
   hasKey: boolean
   masked: string
+  openrouter?: { hasKey: boolean; masked: string }
+  kimi?: { hasKey: boolean; masked: string }
 }
 
 // ── File operations ────────────────────────────────────────────────────────

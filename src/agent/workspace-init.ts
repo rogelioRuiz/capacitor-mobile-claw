@@ -405,6 +405,7 @@ const CURATED_MODELS: Record<string, Array<{ id: string; name: string; descripti
     { id: 'gpt-4o-mini', name: 'GPT-4o Mini', description: 'Fast and affordable' },
     { id: 'o4-mini', name: 'o4 Mini', description: 'Reasoning model' },
   ],
+  kimi: [{ id: 'kimi-for-coding', name: 'Kimi for Coding', description: 'Moonshot AI — coding-tuned', default: true }],
 }
 
 export function getModels(

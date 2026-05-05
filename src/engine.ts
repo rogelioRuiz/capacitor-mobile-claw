@@ -836,8 +836,20 @@ export class MobileClawEngine {
   }
 
   async getAuthStatus(provider = 'anthropic'): Promise<AuthStatus> {
-    const result = await getNativeAgent().getAuthStatus({ provider })
-    return { hasKey: result.hasKey, masked: result.masked }
+    const plugin = getNativeAgent()
+    const [primary, openrouter, kimi] = await Promise.all([
+      plugin.getAuthStatus({ provider }),
+      plugin.getAuthStatus({ provider: 'openrouter' }).catch(() => null),
+      plugin.getAuthStatus({ provider: 'kimi' }).catch(() => null),
+    ])
+    const out: AuthStatus = { hasKey: primary.hasKey, masked: primary.masked }
+    if (openrouter) {
+      out.openrouter = { hasKey: openrouter.hasKey, masked: openrouter.masked }
+    }
+    if (kimi) {
+      out.kimi = { hasKey: kimi.hasKey, masked: kimi.masked }
+    }
+    return out
   }
 
   async setAuthKey(key: string, provider = 'anthropic', type: 'api_key' | 'oauth' = 'api_key'): Promise<void> {
