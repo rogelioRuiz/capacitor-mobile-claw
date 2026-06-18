@@ -859,7 +859,9 @@ export class MobileClawEngine {
     if (action === 'setApiKey') {
       const apiKey = typeof config.apiKey === 'string' ? config.apiKey.trim() : ''
       if (!apiKey) throw new Error('Missing apiKey for setApiKey')
-      await plugin.setAuthKey({ key: apiKey, provider, authType: 'api_key' })
+      // Optional endpoint override (e.g. a backend proxy that holds the real key).
+      const baseUrl = typeof config.baseUrl === 'string' && config.baseUrl.trim() ? config.baseUrl.trim() : undefined
+      await plugin.setAuthKey({ key: apiKey, provider, authType: 'api_key', baseUrl })
       return
     }
 
@@ -903,8 +905,27 @@ export class MobileClawEngine {
     return out
   }
 
-  async setAuthKey(key: string, provider = 'anthropic', type: 'api_key' | 'oauth' = 'api_key'): Promise<void> {
-    await getNativeAgent().setAuthKey({ key, provider, authType: type })
+  /**
+   * Store an auth key (or OAuth access token) for a provider.
+   *
+   * `opts.baseUrl`, when set, overrides the provider's default endpoint — point
+   * it at a backend proxy that injects the real API key server-side so the
+   * device never holds the provider secret. In that case `key` is just a
+   * non-secret placeholder; the proxy authenticates the request itself (e.g. a
+   * session cookie). Omit `baseUrl` for the normal direct-to-provider behavior.
+   */
+  async setAuthKey(
+    key: string,
+    provider = 'anthropic',
+    type: 'api_key' | 'oauth' = 'api_key',
+    opts?: { baseUrl?: string },
+  ): Promise<void> {
+    await getNativeAgent().setAuthKey({
+      key,
+      provider,
+      authType: type,
+      baseUrl: opts?.baseUrl,
+    })
   }
 
   async getModels(

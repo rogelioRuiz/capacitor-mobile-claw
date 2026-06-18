@@ -1,6 +1,6 @@
 {
   "name": "capacitor-mobile-claw",
-  "version": "2.3.1",
+  "version": "2.4.0",
   "description": "On-device AI agent engine for Capacitor apps — thin WebView bridge to a native Rust agent with LLM, tool execution, cron, and MCP support",
   "main": "dist/esm/index.js",
   "types": "dist/esm/index.d.ts",
@@ -50,7 +50,7 @@
     "@capacitor/filesystem": "^8.0.0",
     "@modelcontextprotocol/sdk": ">=1.0.0",
     "capacitor-mobilecron": ">=0.1.0",
-    "capacitor-native-agent": ">=0.1.0"
+    "capacitor-native-agent": ">=0.9.14"
   },
   "peerDependenciesMeta": {
     "@modelcontextprotocol/sdk": {
